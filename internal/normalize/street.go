@@ -204,19 +204,32 @@ func SplitStreetType(s string) (name, typ string) {
 	}
 
 	words := strings.Split(norm, " ")
-	kept := make([]string, 0, len(words))
-	for _, w := range words {
-		if typ == "" {
-			if c, ok := canonOf(w); ok {
-				typ = c
-				continue
-			}
+
+	// Типом считается ПОСЛЕДНЕЕ подходящее слово, а не первое.
+	//
+	// В «Большая Набережная улица» типами выглядят оба слова — «набережная»
+	// и «улица», — но тип здесь только второе, а «Набережная» это название.
+	// Разбор по первому совпадению давал «большая улица» + тип «набережная»,
+	// то есть название улицы включало слово «улица».
+	typeAt := -1
+	for i, w := range words {
+		if _, ok := canonOf(w); ok {
+			typeAt = i
 		}
-		kept = append(kept, w)
 	}
-	if len(kept) == 0 {
+	if typeAt < 0 {
 		return norm, ""
 	}
+
+	// Единственное слово и то оказалось типом: это название («Линия»).
+	if len(words) == 1 {
+		return norm, ""
+	}
+
+	typ, _ = canonOf(words[typeAt])
+	kept := make([]string, 0, len(words)-1)
+	kept = append(kept, words[:typeAt]...)
+	kept = append(kept, words[typeAt+1:]...)
 	return strings.Join(kept, " "), typ
 }
 
