@@ -12,6 +12,7 @@ import (
 
 	"github.com/zazzool/y-fias/internal/gar"
 	"github.com/zazzool/y-fias/internal/index"
+	"github.com/zazzool/y-fias/internal/normalize"
 	"github.com/zazzool/y-fias/internal/parse"
 )
 
@@ -117,6 +118,17 @@ func Run(ctx context.Context, a *gar.Archive, version int64, opt Options) (*Resu
 	parentsAdm := make(map[int64]int64, len(objects))
 	parentsMun := make(map[int64]int64, len(objects))
 
+	// Связи «дом -> улица» собираются ЗДЕСЬ ЖЕ, попутно.
+	//
+	// Раньше для них иерархия читалась вторым проходом, а это ещё гигабайт
+	// загрузки и несколько минут — притом что нужные связи проходят мимо нас
+	// уже в первом проходе. Признак дома простой: родитель есть в списке
+	// известных объектов, а сам объект — нет.
+	var childOfObject map[int64]int64
+	if opt.WithHouses {
+		childOfObject = make(map[int64]int64, 1<<21)
+	}
+
 	for _, h := range []struct {
 		kind string
 		dst  map[int64]int64
@@ -130,18 +142,25 @@ func Run(ctx context.Context, a *gar.Archive, version int64, opt Options) (*Resu
 			}
 			dst := h.dst
 			st, err := streamEntry(e, func(r io.Reader) (gar.Stats, error) {
-				return gar.ParseLinks(r, gar.Filter{Objects: objFilter},
-					func(l gar.Link) { dst[l.ObjectID] = l.ParentID })
+				// Фильтр не задан: нужны и связи известных объектов, и связи
+				// их потомков-домов. Отбор идёт в обработчике.
+				return gar.ParseLinks(r, gar.Filter{}, func(l gar.Link) {
+					if objFilter[l.ObjectID] {
+						dst[l.ObjectID] = l.ParentID
+						return
+					}
+					if childOfObject != nil && objFilter[l.ParentID] {
+						childOfObject[l.ObjectID] = l.ParentID
+					}
+				})
 			})
 			if err != nil {
 				return nil, err
 			}
 			log.Info("иерархия", "вид", h.kind, "регион", e.Region,
-				"связей", st.Kept, "просмотрено", st.Seen)
+				"просмотрено", st.Seen, "объектов", len(dst), "домов", len(childOfObject))
 		}
 	}
-	parents := parentsAdm
-
 	// Шаг 3. Улицы с разрешённым районом.
 	streets := make([]index.Street, 0, len(objects))
 	posByObject := make(map[int64]uint32, len(objects))
@@ -183,6 +202,11 @@ func Run(ctx context.Context, a *gar.Archive, version int64, opt Options) (*Resu
 		})
 	}
 	log.Info("улицы", "всего", len(streets), "без района", noDistrict)
+	for typ, n := range topCounts(unknownTypes, 12) {
+		log.Info("вид объекта не является типом улицы",
+			"вид", typ, "объектов", n,
+			"замечание", "если это тип улицы — добавьте в normalize.streetTypes")
+	}
 	for chain, n := range topChains(chainLevels, 8) {
 		log.Info("цепочка без района", "уровни", chain, "объектов", n)
 	}
@@ -191,7 +215,7 @@ func Run(ctx context.Context, a *gar.Archive, version int64, opt Options) (*Resu
 
 	// Шаг 4. Дома — по желанию.
 	if opt.WithHouses {
-		houses, err := loadHouses(ctx, a, opt, log, parents, posByObject)
+		houses, err := loadHouses(ctx, a, opt, log, childOfObject, posByObject)
 		if err != nil {
 			return nil, err
 		}
@@ -273,28 +297,9 @@ func loadHouses(
 	a *gar.Archive,
 	opt Options,
 	log *slog.Logger,
-	parents map[int64]int64,
+	houseParent map[int64]int64,
 	posByObject map[int64]uint32,
 ) (map[uint32][]string, error) {
-	// Связь «дом -> улица» лежит в той же иерархии, но фильтр шага 2
-	// оставил только адресные объекты. Читаем иерархию ещё раз, теперь
-	// оставляя связи, чей родитель — известная нам улица.
-	houseParent := make(map[int64]int64, 1<<21)
-	for _, e := range a.Entries(gar.KindAdmHierarchy, opt.Regions) {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		_, err := streamEntry(e, func(r io.Reader) (gar.Stats, error) {
-			return gar.ParseLinks(r, gar.Filter{}, func(l gar.Link) {
-				if _, ok := posByObject[l.ParentID]; ok {
-					houseParent[l.ObjectID] = l.ParentID
-				}
-			})
-		})
-		if err != nil {
-			return nil, err
-		}
-	}
 	log.Info("связи домов", "всего", len(houseParent))
 
 	houseFilter := make(map[int64]bool, len(houseParent))
@@ -314,7 +319,14 @@ func loadHouses(
 					if !ok {
 						return
 					}
-					out[pos] = append(out[pos], canonicalHouse(h))
+					// Пустой номер дома не несёт информации: по нему
+					// нельзя ни найти адрес, ни отличить один дом от
+					// другого. В ГАР такие записи встречаются.
+					canon := canonicalHouse(h)
+					if canon == "" {
+						return
+					}
+					out[pos] = append(out[pos], canon)
 				})
 		})
 		if err != nil {
@@ -375,8 +387,33 @@ func streetType(o gar.Object) string {
 		// Название посёлка самодостаточно: «Акулово», а не «Акулово д.».
 		return ""
 	}
-	return expandType(o.TypeName)
+
+	typ := expandType(o.TypeName)
+	if typ == "" {
+		return ""
+	}
+
+	// Тип принимается, только если он ЕСТЬ в словаре типов улиц.
+	//
+	// В ГАР по области объекты размечены видами, которые типами улиц не
+	// являются: «гск» (1 556 объектов), «снт» (808), «зона», «а/я»,
+	// «ж/д к-ма». Их названия самодостаточны и уже содержат вид —
+	// «СНТ Лесное» с типом «снт» давало ключ «лесное снт снт», где вид
+	// удвоился и перестал совпадать с ключом пользовательского ввода.
+	//
+	// Правило одно и покрывает в том числе виды, которых мы ещё не видели:
+	// если это не тип улицы, значит это вид места, а название места стоит
+	// само за себя. Неизвестные виды ингест перечисляет в логе, чтобы
+	// настоящий тип улицы можно было заметить и добавить в словарь.
+	if !normalize.IsStreetType(normalize.SearchNorm(typ)) {
+		unknownTypes[o.TypeName]++
+		return ""
+	}
+	return typ
 }
+
+// unknownTypes копит виды объектов, не опознанные как типы улиц.
+var unknownTypes = map[string]int{}
 
 // expandType разворачивает сокращение типа улицы из ГАР в канонический вид.
 // В ГАР это «ул», «пер», «ш»; в подсказке нужно «улица», «переулок», «шоссе».
@@ -414,6 +451,11 @@ func chainOf(id int64, objects map[int64]gar.Object, parents map[int64]int64) st
 		cur = parents[cur]
 	}
 	return strings.Join(b, " -> ")
+}
+
+// topCounts — n самых частых ключей карты.
+func topCounts(m map[string]int, n int) map[string]int {
+	return topChains(m, n)
 }
 
 func topChains(m map[string]int, n int) map[string]int {

@@ -88,6 +88,9 @@ type Snapshot struct {
 
 	// Слой нечёткого поиска: биграмма -> позиции.
 	bigrams map[uint32][]uint32
+
+	// Дома по позиции улицы; подключаются отдельно через SetHouses.
+	houses map[uint32][]HouseRef
 }
 
 // Len — сколько объектов в снапшоте.

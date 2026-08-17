@@ -30,14 +30,27 @@ import (
 //
 //	01 — первый формат
 //	02 — контрольная сумма покрывает не только пул строк, но и записи
-var magic = [8]byte{'Y', 'F', 'S', 'N', 'A', 'P', '0', '2'}
+//	03 — добавлена секция домов
+var magic = [8]byte{'Y', 'F', 'S', 'N', 'A', 'P', '0', '3'}
 
 // Header — начало файла.
 type Header struct {
 	Version int64
 	BuiltAt time.Time
 	Streets int32
+	Houses  int32
 	CRC     uint32
+}
+
+// Data — содержимое снапшота.
+type Data struct {
+	Streets []index.Street
+	// Houses — канонические номера домов по позиции улицы.
+	//
+	// Нужны, чтобы отличать «дома нет в справочнике ФНС» от «дом не найден»
+	// (HouseQC), и для вывода района по соседним домам. Хранятся отдельной
+	// секцией: их 2.3 млн против 85 тыс. улиц, и грузить их нужно не всегда.
+	Houses map[uint32][]string
 }
 
 // Write сохраняет улицы в файл.
@@ -45,7 +58,7 @@ type Header struct {
 // Запись идёт во временный файл и завершается переименованием: иначе
 // прерванный ингест оставил бы половину снапшота под тем же именем, и сервис
 // поднялся бы на нём.
-func Write(path string, streets []index.Street, version int64) (Header, error) {
+func Write(path string, d Data, version int64) (Header, error) {
 	tmp := path + ".tmp"
 
 	f, err := os.Create(tmp)
@@ -54,7 +67,7 @@ func Write(path string, streets []index.Street, version int64) (Header, error) {
 	}
 	defer os.Remove(tmp) // на случай ошибки; после Rename файла уже нет
 
-	h, err := writeTo(f, streets, version)
+	h, err := writeTo(f, d, version)
 	if err != nil {
 		f.Close()
 		return Header{}, err
@@ -68,7 +81,8 @@ func Write(path string, streets []index.Street, version int64) (Header, error) {
 	return h, nil
 }
 
-func writeTo(w io.Writer, streets []index.Street, version int64) (Header, error) {
+func writeTo(w io.Writer, d Data, version int64) (Header, error) {
+	streets := d.Streets
 	// Пул строк: каждое уникальное значение хранится один раз. Названия
 	// районов и населённых пунктов повторяются тысячами, поэтому выигрыш
 	// заметный.
@@ -104,12 +118,44 @@ func writeTo(w io.Writer, streets []index.Street, version int64) (Header, error)
 		}
 	}
 
+	// Дома: для каждой улицы — свой пул номеров и диапазон в нём.
+	//
+	// Номера домов почти не повторяются между улицами, поэтому общий пул
+	// строк им не нужен; хватает одного сплошного буфера с разделителями.
+	var (
+		housePool  []byte
+		houseRange = make([][2]uint32, len(streets))
+		houseCount int
+	)
+	for i := range streets {
+		list := d.Houses[uint32(i)]
+		if len(list) == 0 {
+			continue
+		}
+		start := uint32(len(housePool))
+		for _, h := range list {
+			if h == "" {
+				continue
+			}
+			housePool = append(housePool, h...)
+			housePool = append(housePool, 0) // разделитель
+			houseCount++
+		}
+		// Улица, у которой все номера оказались пустыми, диапазона не
+		// получает. Иначе запись и чтение расходятся: писатель считает её
+		// улицей с домами, а читатель пропускает пустой диапазон. Ровно
+		// это поймала проверка после ингеста — 14 улиц из 71 032.
+		if n := uint32(len(housePool)) - start; n > 0 {
+			houseRange[i] = [2]uint32{start, n}
+		}
+	}
+
 	// Полезная нагрузка собирается целиком в память, чтобы контрольная сумма
 	// покрывала И пул строк, И записи. Считать её только по пулу было
 	// недостаточно: порча в записях проходила незамеченной, а именно там
 	// лежат смещения — по битому смещению читается чужая строка, и сервис
 	// отвечает правдоподобно и неверно.
-	payload := make([]byte, 0, len(pool)+len(recs)*recSize)
+	payload := make([]byte, 0, len(pool)+len(recs)*recSize+len(housePool)+len(streets)*8)
 	payload = append(payload, pool...)
 
 	var scratch [recSize]byte
@@ -123,11 +169,19 @@ func writeTo(w io.Writer, streets []index.Street, version int64) (Header, error)
 		payload = append(payload, scratch[:]...)
 	}
 
+	var pair [8]byte
+	for _, r := range houseRange {
+		putPair(pair[:], r)
+		payload = append(payload, pair[:]...)
+	}
+	payload = append(payload, housePool...)
+
 	bw := bufio.NewWriterSize(w, 1<<20)
 	hdr := Header{
 		Version: version,
 		BuiltAt: time.Now(),
 		Streets: int32(len(streets)),
+		Houses:  int32(houseCount),
 		CRC:     crc32.ChecksumIEEE(payload),
 	}
 
@@ -138,8 +192,10 @@ func writeTo(w io.Writer, streets []index.Street, version int64) (Header, error)
 		hdr.Version,
 		hdr.BuiltAt.UnixNano(),
 		hdr.Streets,
+		hdr.Houses,
 		hdr.CRC,
 		int64(len(pool)),
+		int64(len(housePool)),
 	} {
 		if err := binary.Write(bw, binary.LittleEndian, v); err != nil {
 			return hdr, err
@@ -159,29 +215,32 @@ func putPair(b []byte, p [2]uint32) {
 	binary.LittleEndian.PutUint32(b[4:], p[1])
 }
 
-// Read загружает улицы из файла.
-func Read(path string) ([]index.Street, Header, error) {
+// Read загружает снапшот из файла.
+func Read(path string) (Data, Header, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, Header{}, err
+		return Data{}, Header{}, err
 	}
 	return decode(data)
 }
 
-func decode(data []byte) ([]index.Street, Header, error) {
-	var hdr Header
+func decode(data []byte) (Data, Header, error) {
+	var (
+		hdr Header
+		out Data
+	)
 
-	const headerSize = 8 + 8 + 8 + 4 + 4 + 8
+	const headerSize = 8 + 8 + 8 + 4 + 4 + 4 + 8 + 8
 	if len(data) < headerSize {
-		return nil, hdr, fmt.Errorf("файл короче заголовка: %d байт", len(data))
+		return out, hdr, fmt.Errorf("файл короче заголовка: %d байт", len(data))
 	}
 	if got := [8]byte(data[:8]); got != magic {
 		if string(got[:6]) == "YFSNAP" {
-			return nil, hdr, fmt.Errorf(
+			return out, hdr, fmt.Errorf(
 				"снапшот версии формата %s, поддерживается %s — пересоберите: make snapshot",
 				got[6:], magic[6:])
 		}
-		return nil, hdr, fmt.Errorf("не снапшот Y-FIAS: неверная сигнатура")
+		return out, hdr, fmt.Errorf("не снапшот Y-FIAS: неверная сигнатура")
 	}
 
 	p := 8
@@ -191,31 +250,37 @@ func decode(data []byte) ([]index.Street, Header, error) {
 	p += 8
 	hdr.Streets = int32(binary.LittleEndian.Uint32(data[p:]))
 	p += 4
+	hdr.Houses = int32(binary.LittleEndian.Uint32(data[p:]))
+	p += 4
 	hdr.CRC = binary.LittleEndian.Uint32(data[p:])
 	p += 4
 	poolLen := int(binary.LittleEndian.Uint64(data[p:]))
 	p += 8
+	housePoolLen := int(binary.LittleEndian.Uint64(data[p:]))
+	p += 8
 
-	if poolLen < 0 || p+poolLen > len(data) {
-		return nil, hdr, fmt.Errorf("повреждён пул строк: длина %d", poolLen)
+	if poolLen < 0 || housePoolLen < 0 {
+		return out, hdr, fmt.Errorf("повреждены длины секций: %d, %d", poolLen, housePoolLen)
 	}
 
-	need := int(hdr.Streets) * recSize
-	if p+poolLen+need > len(data) {
-		return nil, hdr, fmt.Errorf("файл обрывается: нужно %d байт, есть %d",
-			poolLen+need, len(data)-p)
+	recs := int(hdr.Streets) * recSize
+	ranges := int(hdr.Streets) * 8
+	total := poolLen + recs + ranges + housePoolLen
+	if p+total > len(data) {
+		return out, hdr, fmt.Errorf("файл обрывается: нужно %d байт, есть %d",
+			total, len(data)-p)
 	}
 
 	// Контрольная сумма отделяет повреждённый файл от несовместимого и
 	// покрывает всю полезную нагрузку, включая смещения в записях.
-	payload := data[p : p+poolLen+need]
-	if got := crc32.ChecksumIEEE(payload); got != hdr.CRC {
-		return nil, hdr, fmt.Errorf("контрольная сумма не совпала: %08x против %08x",
+	if got := crc32.ChecksumIEEE(data[p : p+total]); got != hdr.CRC {
+		return out, hdr, fmt.Errorf("контрольная сумма не совпала: %08x против %08x",
 			got, hdr.CRC)
 	}
 
 	pool := data[p : p+poolLen]
 	p += poolLen
+	need := recs
 
 	str := func(off, ln uint32) (string, error) {
 		if ln == 0 {
@@ -227,7 +292,8 @@ func decode(data []byte) ([]index.Street, Header, error) {
 		return string(pool[off : off+ln]), nil
 	}
 
-	streets := make([]index.Street, hdr.Streets)
+	out.Streets = make([]index.Street, hdr.Streets)
+	streets := out.Streets
 	for i := range streets {
 		base := p + i*recSize
 		g := func(k int) (uint32, uint32) {
@@ -244,7 +310,7 @@ func decode(data []byte) ([]index.Street, Header, error) {
 		fields := [5]string{}
 		for k, pair := range [5][2]uint32{{no, nl}, {to, tl}, {ro, rl}, {do, dl}, {so, sl}} {
 			if fields[k], err = str(pair[0], pair[1]); err != nil {
-				return nil, hdr, fmt.Errorf("улица %d: %w", i, err)
+				return out, hdr, fmt.Errorf("улица %d: %w", i, err)
 			}
 		}
 
@@ -257,5 +323,45 @@ func decode(data []byte) ([]index.Street, Header, error) {
 			Calls:      binary.LittleEndian.Uint32(data[base+5*8:]),
 		}
 	}
-	return streets, hdr, nil
+	p += need
+
+	// Секция домов.
+	if hdr.Houses > 0 {
+		rangesAt := p
+		housesAt := p + ranges
+		housePool := data[housesAt : housesAt+housePoolLen]
+
+		out.Houses = make(map[uint32][]string, hdr.Streets/4)
+		for i := range streets {
+			off := binary.LittleEndian.Uint32(data[rangesAt+i*8:])
+			ln := binary.LittleEndian.Uint32(data[rangesAt+i*8+4:])
+			if ln == 0 {
+				continue
+			}
+			if int(off)+int(ln) > len(housePool) {
+				return out, hdr, fmt.Errorf("улица %d: дома вне пула", i)
+			}
+			out.Houses[uint32(i)] = splitZ(housePool[off : off+ln])
+		}
+	}
+
+	return out, hdr, nil
+}
+
+// splitZ разбивает буфер, где строки разделены нулевым байтом.
+func splitZ(b []byte) []string {
+	var out []string
+	start := 0
+	for i, c := range b {
+		if c == 0 {
+			if i > start {
+				out = append(out, string(b[start:i]))
+			}
+			start = i + 1
+		}
+	}
+	if start < len(b) {
+		out = append(out, string(b[start:]))
+	}
+	return out
 }

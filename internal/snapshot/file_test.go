@@ -17,7 +17,7 @@ func TestWriteRead(t *testing.T) {
 	}
 
 	path := filepath.Join(t.TempDir(), "test.yfsnap")
-	hdr, err := Write(path, streets, 20260814)
+	hdr, err := Write(path, Data{Streets: streets}, 20260814)
 	if err != nil {
 		t.Fatalf("запись: %v", err)
 	}
@@ -25,7 +25,8 @@ func TestWriteRead(t *testing.T) {
 		t.Errorf("в заголовке улиц %d, ожидалось %d", hdr.Streets, len(streets))
 	}
 
-	got, gotHdr, err := Read(path)
+	data, gotHdr, err := Read(path)
+	got := data.Streets
 	if err != nil {
 		t.Fatalf("чтение: %v", err)
 	}
@@ -45,12 +46,56 @@ func TestWriteRead(t *testing.T) {
 	}
 }
 
+func TestWriteReadHouses(t *testing.T) {
+	streets := []index.Street{
+		{Name: "Саляма Адиля", Type: "улица", Region: "77"},
+		{Name: "Без домов", Type: "улица", Region: "77"},
+		{Name: "Только пустые", Type: "улица", Region: "77"},
+	}
+	houses := map[uint32][]string{
+		0: {"7", "7к7", "10с4", "2/44кг"},
+		// Улица, у которой все номера пустые. Именно такие 14 штук
+		// разошлись между записью и чтением при первом полном ингесте.
+		2: {"", ""},
+	}
+
+	path := filepath.Join(t.TempDir(), "houses.yfsnap")
+	hdr, err := Write(path, Data{Streets: streets, Houses: houses}, 1)
+	if err != nil {
+		t.Fatalf("запись: %v", err)
+	}
+	if hdr.Houses != 4 {
+		t.Errorf("в заголовке домов %d, ожидалось 4", hdr.Houses)
+	}
+
+	got, _, err := Read(path)
+	if err != nil {
+		t.Fatalf("чтение: %v", err)
+	}
+
+	// Улицы без непустых домов в карте быть не должно — иначе счётчики
+	// записи и чтения расходятся.
+	if len(got.Houses) != 1 {
+		t.Fatalf("улиц с домами %d, ожидалась 1: %+v", len(got.Houses), got.Houses)
+	}
+
+	want := []string{"7", "7к7", "10с4", "2/44кг"}
+	if len(got.Houses[0]) != len(want) {
+		t.Fatalf("домов %d, ожидалось %d: %v", len(got.Houses[0]), len(want), got.Houses[0])
+	}
+	for i, w := range want {
+		if got.Houses[0][i] != w {
+			t.Errorf("дом %d: %q, ожидалось %q", i, got.Houses[0][i], w)
+		}
+	}
+}
+
 // Повреждённый файл обязан приводить к ошибке, а не к правдоподобному мусору:
 // сервис, поднявшийся на битом снапшоте, отвечал бы уверенно и неверно.
 func TestReadRejectsCorrupted(t *testing.T) {
 	streets := []index.Street{{Name: "Тверская", Type: "улица", Region: "77"}}
 	path := filepath.Join(t.TempDir(), "test.yfsnap")
-	if _, err := Write(path, streets, 1); err != nil {
+	if _, err := Write(path, Data{Streets: streets}, 1); err != nil {
 		t.Fatal(err)
 	}
 
@@ -93,10 +138,10 @@ func TestWriteIsAtomic(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "snap.yfsnap")
 
-	if _, err := Write(path, []index.Street{{Name: "Первая"}}, 1); err != nil {
+	if _, err := Write(path, Data{Streets: []index.Street{{Name: "Первая"}}}, 1); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Write(path, []index.Street{{Name: "Вторая"}, {Name: "Третья"}}, 2); err != nil {
+	if _, err := Write(path, Data{Streets: []index.Street{{Name: "Вторая"}, {Name: "Третья"}}}, 2); err != nil {
 		t.Fatal(err)
 	}
 
@@ -110,10 +155,11 @@ func TestWriteIsAtomic(t *testing.T) {
 		}
 	}
 
-	got, _, err := Read(path)
+	d, _, err := Read(path)
 	if err != nil {
 		t.Fatal(err)
 	}
+	got := d.Streets
 	if len(got) != 2 || got[0].Name != "Вторая" {
 		t.Errorf("файл не заменился: %+v", got)
 	}

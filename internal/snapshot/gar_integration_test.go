@@ -15,19 +15,33 @@ import (
 
 // Проверки на реальном снапшоте ГАР. Собрать его:
 //
-//	go run ./cmd/yfias-ingest -regions=77 -out=data/moscow.yfsnap
+//	make snapshot
+//
+// Берётся полный снапшот, если он есть, иначе московский: проверки одинаково
+// осмысленны на обоих, а требовать одиннадцатиминутной сборки ради запуска
+// тестов не стоит.
 func loadGar(t *testing.T) ([]index.Street, Header) {
 	t.Helper()
 
-	path := filepath.Join("..", "..", "data", "moscow.yfsnap")
-	if _, err := os.Stat(path); err != nil {
-		t.Skipf("снапшот ГАР не собран (%v). Собрать: make snapshot", err)
+	var lastErr error
+	for _, name := range []string{"gar.yfsnap", "moscow.yfsnap"} {
+		path := filepath.Join("..", "..", "data", name)
+		if _, err := os.Stat(path); err != nil {
+			continue
+		}
+		d, hdr, err := Read(path)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		t.Logf("снапшот: %s", name)
+		return d.Streets, hdr
 	}
-	streets, hdr, err := Read(path)
-	if err != nil {
-		t.Fatalf("чтение снапшота: %v", err)
+	if lastErr != nil {
+		t.Fatalf("чтение снапшота: %v", lastErr)
 	}
-	return streets, hdr
+	t.Skip("снапшот ГАР не собран. Собрать: make snapshot")
+	return nil, Header{}
 }
 
 func TestGar_DataQuality(t *testing.T) {

@@ -93,7 +93,10 @@ func run(ctx context.Context, log *slog.Logger, out, regions, archivePath string
 		return err
 	}
 
-	hdr, err := snapshot.Write(out, res.Streets, res.Version)
+	hdr, err := snapshot.Write(out, snapshot.Data{
+		Streets: res.Streets,
+		Houses:  res.Houses,
+	}, res.Version)
 	if err != nil {
 		return fmt.Errorf("запись снапшота: %w", err)
 	}
@@ -102,22 +105,27 @@ func run(ctx context.Context, log *slog.Logger, out, regions, archivePath string
 	log.Info("снапшот записан",
 		"файл", out,
 		"улиц", hdr.Streets,
+		"домов", hdr.Houses,
 		"размер", humanBytes(st.Size()),
 		"версия", hdr.Version)
 
 	// Проверка на месте: снапшот, который не читается обратно, бесполезен,
 	// и узнать об этом надо здесь, а не при старте сервиса.
-	streets, _, err := snapshot.Read(out)
+	back, _, err := snapshot.Read(out)
 	if err != nil {
 		return fmt.Errorf("проверочное чтение: %w", err)
 	}
-	if len(streets) != len(res.Streets) {
+	if len(back.Streets) != len(res.Streets) {
 		return fmt.Errorf("проверочное чтение: улиц %d вместо %d",
-			len(streets), len(res.Streets))
+			len(back.Streets), len(res.Streets))
+	}
+	if len(back.Houses) != len(res.Houses) {
+		return fmt.Errorf("проверочное чтение: улиц с домами %d вместо %d",
+			len(back.Houses), len(res.Houses))
 	}
 
 	buildStart := time.Now()
-	snap := index.Build(streets, res.Version)
+	snap := index.Build(back.Streets, res.Version)
 	log.Info("индекс собран",
 		"улиц", snap.Len(),
 		"за", time.Since(buildStart).Round(time.Millisecond))
