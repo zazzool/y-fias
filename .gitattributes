@@ -1,0 +1,15 @@
+# Разработка идёт на Windows, сборка и прод — Linux.
+# Makefile и shell-скрипты с CRLF не выполняются, поэтому LF принудительно.
+* text=auto eol=lf
+
+Makefile     text eol=lf
+*.sh         text eol=lf
+*.go         text eol=lf
+*.sql        text eol=lf
+*.yml        text eol=lf
+*.yaml       text eol=lf
+*.md         text eol=lf
+
+# Данные и снапшоты — бинарные, конвертировать нельзя.
+*.yfsnap     binary
+*.csv        text eol=lf
