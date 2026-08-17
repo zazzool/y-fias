@@ -1,0 +1,56 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - bodyclose
+    - errorlint
+    - copyloopvar
+    - misspell
+    - nilerr
+    - prealloc
+    - unconvert
+    # Горячий путь (parse, index) обязан обходиться без аллокаций — §9.3.
+    - gocritic
+
+  settings:
+    misspell:
+      locale: US
+      # Комментарии и данные на русском; словарь на них не срабатывает,
+      # но имена улиц в testdata трогать нельзя.
+      ignore-rules:
+        - vlad
+    gocritic:
+      enabled-tags:
+        - performance
+        - diagnostic
+      disabled-checks:
+        - hugeParam # структуры разбора передаются по значению намеренно
+
+  exclusions:
+    rules:
+      # Сгенерированный код не проверяем.
+      - path: internal/normalize/gen/
+        linters:
+          - all
+      # В тестах допустимы длинные таблицы и непроверенные Close.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - prealloc
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/zazzool/y-fias

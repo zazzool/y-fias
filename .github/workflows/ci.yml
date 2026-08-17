@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  GO_VERSION: "1.25.5"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      # Инвариант 5 (§0 архитектуры): правило нормализации существует в одном
+      # месте. Если sql/normalize.sql разошёлся с Go — сборка красная.
+      - name: sql/normalize.sql актуален
+        run: |
+          go generate ./...
+          git diff --exit-code -- sql/ || {
+            echo "::error::sql/ устарел относительно Go. Запустите make generate."
+            exit 1
+          }
+
+      - name: Линтеры
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Тесты
+        run: go test -race -coverprofile=coverage.out ./...
+
+      - name: Сборка
+        run: go build ./...
+
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: yfias
+          POSTGRES_PASSWORD: yfias
+          POSTGRES_DB: yfias_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U yfias -d yfias_test"
+          --health-interval 2s --health-timeout 3s --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      # Контрактный тест Go<->SQL и проверка планов запросов (§9.4:
+      # EXPLAIN не должен содержать Seq Scan по calls).
+      - name: Интеграционные тесты
+        env:
+          YFIAS_TEST_DSN: postgres://yfias:yfias@localhost:5432/yfias_test?sslmode=disable
+        run: go test -race -tags=integration ./...
+
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      # Короткий прогон на каждый PR; длинный — по расписанию.
+      - name: Фаззинг парсера дома
+        run: |
+          if ls internal/parse/*_test.go >/dev/null 2>&1; then
+            go test -run='^$' -fuzz=FuzzParseHouse -fuzztime=60s ./internal/parse/
+          fi
