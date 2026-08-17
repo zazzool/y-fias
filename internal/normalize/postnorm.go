@@ -54,6 +54,7 @@ var postNormRules = []postNormRule{
 	{Name: "квартал: «кв л»", Pattern: ` кв л `, Replace: ` квартал `},
 	{Name: "набережная: «наб я»", Pattern: ` наб я `, Replace: ` набережная `},
 	{Name: "район: «р он», «р н»", Pattern: ` (?:р он|р н) `, Replace: ` район `},
+	{Name: "местечко: «м ко»", Pattern: ` м ко `, Replace: ` местечко `},
 }
 
 var compiledPostNorm = func() []*regexp.Regexp {

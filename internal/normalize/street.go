@@ -44,7 +44,7 @@ var streetTypes = []StreetType{
 	{Canon: "проезд", Aliases: []string{"прд", "проез"}},
 	{Canon: "тупик", Aliases: []string{"туп"}},
 	{Canon: "аллея", Aliases: []string{"ал"}},
-	{Canon: "линия", Aliases: nil},
+	{Canon: "линия", Aliases: []string{"лн"}},
 	{Canon: "квартал", Aliases: []string{"кв", "кварт"}},
 	{Canon: "микрорайон", Aliases: []string{"мкр", "мкрн", "мк"}},
 
@@ -52,13 +52,26 @@ var streetTypes = []StreetType{
 	// Московской области, где 42 наших адреса и где точность нужна не меньше:
 	// одноимённые СНТ разных районов различаются только контекстом.
 	{Canon: "территория", Aliases: []string{"тер"}},
-	{Canon: "просека", Aliases: nil},
+	{Canon: "просека", Aliases: []string{"просек"}},
 	{Canon: "спуск", Aliases: nil},
 	{Canon: "тракт", Aliases: nil},
 	{Canon: "кольцо", Aliases: nil},
 	{Canon: "магистраль", Aliases: nil},
 	{Canon: "заезд", Aliases: nil},
 	{Canon: "въезд", Aliases: nil},
+
+	// Типы ниже добавлены по факту: ими размечены объекты ГАР по Москве,
+	// а в словаре их не было, из-за чего ключ справочника не совпадал с
+	// ключом пользовательского ввода. Числа — сколько объектов затронуто.
+	{Canon: "километр", Aliases: []string{"км"}},      // 177: «Калужское шоссе 25-й км»
+	{Canon: "сквер", Aliases: nil},                    // 21
+	{Canon: "дорога", Aliases: []string{"дор"}},       // 8
+	{Canon: "парк", Aliases: nil},                     // 3
+	{Canon: "сад", Aliases: nil},                      // 1
+	{Canon: "промзона", Aliases: []string{"промзон"}}, // 2
+	{Canon: "платформа", Aliases: []string{"платф"}},  // 2
+	{Canon: "станция", Aliases: []string{"ст"}},       // 2
+	{Canon: "местечко", Aliases: []string{"м-ко"}},    // 1
 }
 
 // streetTypeTokens — множество всех токенов-типов, включая канонические.
