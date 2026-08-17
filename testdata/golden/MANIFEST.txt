@@ -1,0 +1,14 @@
+# golden-корпус, снят 2026-08-17T16:17:27Z с root@PROD_HOST
+# строки  sha256  файл
+10694  62998fa8f0f5b45d  addresses.csv
+46  d424255a11b52773  corrections.csv
+11  aef1987e515aeb3c  counters.csv
+181  acdf938f272ff572  cross_district.csv
+63  1891c416b6eb1561  dup_by_streetkey.csv
+81  018694b785e9b7b7  dup_groups.csv
+10275  84fdeb09857d129a  freq.csv
+101  902605d345a2d7f9  garbage.csv
+2033  36a50825a1fabf83  houses.csv
+1922  7de33ac1c79ccbe3  numgroups.csv
+148  0dab005099a5ed69  pnds.csv
+1265  ee10d8ded4f64d19  street_keys.csv

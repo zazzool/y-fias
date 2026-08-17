@@ -36,7 +36,9 @@ dump() {
 	esac
 
 	printf '  %-22s' "$name"
-	ssh -o BatchMode=yes "$HOST" \
+	# LogLevel=ERROR глушит предупреждение про post-quantum key exchange,
+	# которое иначе печатается на ту же строку и съедает имя файла.
+	ssh -o BatchMode=yes -o LogLevel=ERROR "$HOST" \
 		"docker exec -i $CONTAINER psql -U $DB_USER -d $DB_NAME \
 		 --csv -v ON_ERROR_STOP=1 -c \"${sql//\"/\\\"}\"" \
 		> "$OUT/$name.csv"
@@ -72,20 +74,31 @@ dump pnds        "SELECT * FROM pnds ORDER BY id"
 
 # ── Материал регресс-тестов ──────────────────────────────────────
 
-# 81 группа настоящих дублей: совпадает и улица, и полный номер дома.
+# 81 группа настоящих дублей, 94 лишние записи.
+#
+# Группировать нужно по КАНОНИЧЕСКОМУ номеру дома, а не по сырому: «7 к 7» и
+# «7к7» — один дом, и опись считала именно так. По сырому получается 63 группы,
+# и 18 групп дублей теряются. Канонизация здесь приближённая (снять пробелы и
+# точки, lower) — полная живёт в Go, но для отбора кандидатов этого хватает.
 dump dup_groups "
-	SELECT street_key(street) AS key, house, count(*) AS n,
+	SELECT street_key(street) AS key,
+	       lower(replace(replace(house, ' ', ''), '.', '')) AS house_canon,
+	       count(*) AS n,
 	       string_agg(id, ',' ORDER BY id) AS ids,
-	       string_agg(DISTINCT street, ' | ') AS variants
+	       string_agg(DISTINCT street, ' | ') AS street_variants,
+	       string_agg(DISTINCT house, ' | ') AS house_variants
 	FROM addresses WHERE house IS NOT NULL AND house <> ''
 	GROUP BY 1, 2 HAVING count(*) > 1 ORDER BY 3 DESC"
 
 # 1 922 группы «улица + ЧИСЛО дома» — это РАЗНЫЕ корпуса.
 # Слить их нельзя: ровно на этом сломалась старая система (§8.2).
+#
+# Фильтра по house НЕТ намеренно — опись считала так же (с фильтром выходит
+# 1916). Группы с пустым домом отличимы по колонке num = пусто.
 dump numgroups "
 	SELECT street_key(street) AS key, house_num(house) AS num, count(*) AS n,
 	       string_agg(DISTINCT house, ',' ORDER BY house) AS houses
-	FROM addresses WHERE house IS NOT NULL AND house <> ''
+	FROM addresses
 	GROUP BY 1, 2 HAVING count(*) > 1 ORDER BY 3 DESC"
 
 # 181 улица, дома которой лежат в разных районах: на них вывод района
@@ -121,16 +134,26 @@ dump garbage "
 
 # ── Сверка с инвентаризацией ─────────────────────────────────────
 
+# ВНИМАНИЕ, две ловушки, обе стоили расследования 17.08.2026:
+#
+#   pnd_id = 0 — это НЕ «ПНД номер ноль», а признак «не задан»: таких 605.
+#   Считать заполненным можно только pnd_id > 0, иначе получается 2289
+#   вместо 1684 и цифры в отчётах по ПНД разъезжаются.
+#
+#   distinct_house считается БЕЗ фильтра house <> '': пустая строка — тоже
+#   написание, и опись учитывала её. С фильтром выходит 2033 вместо 2034.
 dump counters "
 	SELECT 'addresses' AS metric, count(*) AS value FROM addresses
 	UNION ALL SELECT 'with_district', count(*) FROM addresses WHERE district <> ''
-	UNION ALL SELECT 'with_pnd',      count(*) FROM addresses WHERE pnd_id IS NOT NULL
+	UNION ALL SELECT 'with_pnd',      count(*) FROM addresses WHERE pnd_id > 0
+	UNION ALL SELECT 'pnd_zero',      count(*) FROM addresses WHERE pnd_id = 0
 	UNION ALL SELECT 'with_org',      count(*) FROM addresses WHERE organization <> ''
 	UNION ALL SELECT 'region_77',     count(*) FROM addresses WHERE region = '77'
 	UNION ALL SELECT 'region_other',  count(*) FROM addresses WHERE region <> '77'
 	UNION ALL SELECT 'with_coords',   count(*) FROM addresses WHERE lat IS NOT NULL
 	UNION ALL SELECT 'cyrillic_house',count(*) FROM addresses WHERE house ~ '[а-яА-ЯёЁ]'
-	UNION ALL SELECT 'distinct_house',count(DISTINCT house) FROM addresses WHERE house <> ''
+	UNION ALL SELECT 'distinct_house',count(DISTINCT house) FROM addresses
+	UNION ALL SELECT 'house_null',    count(*) FROM addresses WHERE house IS NULL
 	ORDER BY 1"
 
 # ── Манифест ─────────────────────────────────────────────────────
@@ -153,11 +176,13 @@ echo "=== Сверка с инвентаризацией (address-subsystem-inve
 awk -F, 'NR>1 {print "  " $1 ": " $2}' "$OUT/counters.csv"
 cat <<'EOF'
 
-Ожидается по описи:
+Ожидается по описи (сверено 17.08.2026, совпало полностью):
   addresses 10694 · with_district 10382 · with_pnd 1684 · with_org 396
   region_77 10649 · region_other 42 · with_coords 0
   cyrillic_house 6036 · distinct_house 2034
+Сверх описи: pnd_zero 605 · house_null 75
 
-Расхождение означает, что опись устарела. Разберитесь ДО этапа 1:
-индекс и тесты строятся на этих числах.
+Расхождение означает, что опись устарела ЛИБО что запрос выше неверен.
+Прежде чем править опись, перепроверьте запрос: 17.08.2026 все три
+кажущихся расхождения оказались ошибками запроса, а не данных.
 EOF
