@@ -46,17 +46,66 @@ func TestWriteRead(t *testing.T) {
 	}
 }
 
+// Идентификаторы ГАР обязаны переживать запись и чтение: без них
+// дельта-синхронизация невозможна, а обнаруживается это только при
+// следующем обновлении справочника.
+//
+// Тест появился после того, как размер записи был увеличен под
+// идентификаторы, а сама запись значений забыта: файл вырос на 20 МБ,
+// всё читалось без ошибок, но идентификаторы были нулями.
+func TestWriteReadKeepsGarIDs(t *testing.T) {
+	streets := []index.Street{
+		{ObjectID: 1409016, ParentID: 1405113, Name: "Саляма Адиля", Type: "улица", Region: "77"},
+		{ObjectID: 77000, ParentID: 77, Name: "Тверская", Type: "улица", Region: "77"},
+		{Name: "Без идентификаторов"},
+	}
+	houses := map[uint32][]index.HouseRef{
+		0: {
+			{ObjectID: 555001, Canonical: "2/44с1"},
+			{ObjectID: 555002, Canonical: "2/44с4"},
+		},
+	}
+
+	path := filepath.Join(t.TempDir(), "ids.yfsnap")
+	if _, err := Write(path, Data{Streets: streets, Houses: houses}, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	got, _, err := Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for i, w := range streets {
+		g := got.Streets[i]
+		if g.ObjectID != w.ObjectID || g.ParentID != w.ParentID {
+			t.Errorf("улица %d: идентификаторы %d/%d, ожидались %d/%d",
+				i, g.ObjectID, g.ParentID, w.ObjectID, w.ParentID)
+		}
+	}
+
+	for i, w := range houses[0] {
+		g := got.Houses[0][i]
+		if g.ObjectID != w.ObjectID {
+			t.Errorf("дом %d: идентификатор %d, ожидался %d", i, g.ObjectID, w.ObjectID)
+		}
+		if g.Canonical != w.Canonical {
+			t.Errorf("дом %d: номер %q, ожидался %q", i, g.Canonical, w.Canonical)
+		}
+	}
+}
+
 func TestWriteReadHouses(t *testing.T) {
 	streets := []index.Street{
 		{Name: "Саляма Адиля", Type: "улица", Region: "77"},
 		{Name: "Без домов", Type: "улица", Region: "77"},
 		{Name: "Только пустые", Type: "улица", Region: "77"},
 	}
-	houses := map[uint32][]string{
-		0: {"7", "7к7", "10с4", "2/44кг"},
+	houses := map[uint32][]index.HouseRef{
+		0: index.HouseRefsOf("7", "7к7", "10с4", "2/44кг"),
 		// Улица, у которой все номера пустые. Именно такие 14 штук
 		// разошлись между записью и чтением при первом полном ингесте.
-		2: {"", ""},
+		2: index.HouseRefsOf("", ""),
 	}
 
 	path := filepath.Join(t.TempDir(), "houses.yfsnap")
@@ -84,8 +133,8 @@ func TestWriteReadHouses(t *testing.T) {
 		t.Fatalf("домов %d, ожидалось %d: %v", len(got.Houses[0]), len(want), got.Houses[0])
 	}
 	for i, w := range want {
-		if got.Houses[0][i] != w {
-			t.Errorf("дом %d: %q, ожидалось %q", i, got.Houses[0][i], w)
+		if got.Houses[0][i].Canonical != w {
+			t.Errorf("дом %d: %q, ожидалось %q", i, got.Houses[0][i].Canonical, w)
 		}
 	}
 }

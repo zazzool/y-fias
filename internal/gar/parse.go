@@ -198,11 +198,56 @@ func parse(r io.Reader, take func(attrs) bool) (Stats, error) {
 	return st, nil
 }
 
+// Attrs — атрибуты элемента XML.
+//
+// Экспортируется ради синхронизации: дельта разбирается теми же правилами,
+// но с другой логикой отбора — в полном архиве неактуальные записи
+// пропускаются, а в дельте они несут смысл «объект перестал существовать».
+type Attrs = attrs
+
+// ParseAll обходит поток БЕЗ фильтра актуальности, отдавая каждый элемент.
+//
+// Нужен дельте: там решение о том, что делать с неактуальной записью,
+// принимает вызывающий, а не разбор.
+func ParseAll(r io.Reader, fn func(Attrs)) error {
+	dec := xml.NewDecoder(r)
+	dec.Strict = false
+
+	var root bool
+	for {
+		tok, err := dec.Token()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("разбор XML: %w", err)
+		}
+		se, ok := tok.(xml.StartElement)
+		if !ok {
+			continue
+		}
+		if !root {
+			root = true
+			continue
+		}
+		fn(attrsOf(se))
+	}
+}
+
 /* ── Доступ к атрибутам ────────────────────────────────────────── */
 
 type attrs []xml.Attr
 
 func attrsOf(se xml.StartElement) attrs { return attrs(se.Attr) }
+
+// Str — значение атрибута.
+func (a attrs) Str(name string) string { return a.str(name) }
+
+// Int64 — числовое значение атрибута.
+func (a attrs) Int64(name string) int64 { return a.int64(name) }
+
+// IsCurrent — действующая ли это редакция объекта.
+func (a attrs) IsCurrent() bool { return a.isCurrent() }
 
 func (a attrs) str(name string) string {
 	for _, at := range a {

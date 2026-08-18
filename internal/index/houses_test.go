@@ -14,8 +14,8 @@ func withHouses(t *testing.T) *Snapshot {
 		{Name: "Пустая", Type: "улица", Region: "77"},
 	}, 1)
 
-	s.SetHouses(map[uint32][]string{
-		0: {"7", "7к1", "7к7", "10", "10с4", "2/44кг", "15а", "100"},
+	s.SetHouses(map[uint32][]HouseRef{
+		0: HouseRefsOf("7", "7к1", "7к7", "10", "10с4", "2/44кг", "15а", "100"),
 	})
 	return s
 }

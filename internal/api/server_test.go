@@ -22,8 +22,8 @@ func testServer(t *testing.T) http.Handler {
 		{Name: "Вишнёвая", Type: "улица", Region: "50", District: "Раменский", Settlement: "СНТ Лесная поляна"},
 	}, 20260818)
 
-	snap.SetHouses(map[uint32][]string{
-		0: {"2", "2к1", "7к7"},
+	snap.SetHouses(map[uint32][]index.HouseRef{
+		0: index.HouseRefsOf("2", "2к1", "7к7"),
 	})
 
 	areas := geo.NewIndex([]geo.Area{{

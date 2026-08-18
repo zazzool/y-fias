@@ -23,7 +23,7 @@ import (
 // Списки сортируются по ведущему числу: вывод района по соседям (§3.2 описи)
 // работает с ближайшими номерами, и без порядка каждый запрос стоил бы прохода
 // по всей улице.
-func (s *Snapshot) SetHouses(byStreet map[uint32][]string) {
+func (s *Snapshot) SetHouses(byStreet map[uint32][]HouseRef) {
 	if len(byStreet) == 0 {
 		return
 	}
@@ -32,10 +32,10 @@ func (s *Snapshot) SetHouses(byStreet map[uint32][]string) {
 	for id, list := range byStreet {
 		refs := make([]HouseRef, 0, len(list))
 		for _, h := range list {
-			refs = append(refs, HouseRef{
-				Canonical: h,
-				Num:       parse.ParseHouse(h).NumN,
-			})
+			if h.Num == 0 && h.Canonical != "" {
+				h.Num = parse.ParseHouse(h.Canonical).NumN
+			}
+			refs = append(refs, h)
 		}
 		sort.Slice(refs, func(i, j int) bool {
 			if refs[i].Num != refs[j].Num {
@@ -49,8 +49,19 @@ func (s *Snapshot) SetHouses(byStreet map[uint32][]string) {
 
 // HouseRef — дом справочника.
 type HouseRef struct {
+	ObjectID  int64  // идентификатор ГАР; нужен синхронизации
 	Canonical string // каноническая форма: «7к7»
 	Num       int    // ведущее число; ТОЛЬКО для отбора соседей (§8.2)
+}
+
+// HouseRefsOf собирает HouseRef из канонических номеров. Удобство для
+// тестов и для источников, у которых идентификаторов ГАР нет.
+func HouseRefsOf(canonicals ...string) []HouseRef {
+	out := make([]HouseRef, 0, len(canonicals))
+	for _, c := range canonicals {
+		out = append(out, HouseRef{Canonical: c})
+	}
+	return out
 }
 
 // HousesOf возвращает дома улицы, отсортированные по номеру.

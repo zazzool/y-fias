@@ -75,6 +75,14 @@ snapshot: ## Собрать снапшот ГАР (регионы 77 и 50, с �
 geo: ## Загрузить границы районов из OpenStreetMap
 	go run ./cmd/yfias-geo -regions=77,50 -out=data/geo.json
 
+.PHONY: coords
+coords: ## Собрать координаты адресов (нужен выгруженный ответ Overpass)
+	go run ./cmd/yfias-geocode
+
+.PHONY: sync
+sync: ## Обновить справочник дельтами ГАР
+	go run ./cmd/yfias-sync
+
 .PHONY: db-up
 db-up: ## Поднять локальный PostgreSQL для тестов
 	docker compose up -d --wait postgres

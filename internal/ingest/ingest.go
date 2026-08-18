@@ -30,9 +30,9 @@ type Options struct {
 // Result — что получилось.
 type Result struct {
 	Streets []index.Street
-	// Houses — канонические номера домов по позиции улицы в Streets.
-	// Используется для HouseQC и вывода района по соседям.
-	Houses  map[uint32][]string
+	// Houses — дома по позиции улицы, с идентификаторами ГАР.
+	// Используются для HouseQC, вывода района по соседям и синхронизации.
+	Houses  map[uint32][]index.HouseRef
 	Version int64
 	Elapsed time.Duration
 	Fetched int64
@@ -193,6 +193,8 @@ func Run(ctx context.Context, a *gar.Archive, version int64, opt Options) (*Resu
 
 		posByObject[id] = uint32(len(streets))
 		streets = append(streets, index.Street{
+			ObjectID:   id,
+			ParentID:   parentOf(id, parentsMun, parentsAdm),
 			Name:       o.Name,
 			Type:       streetType(o),
 			Region:     o.Region,
@@ -225,6 +227,15 @@ func Run(ctx context.Context, a *gar.Archive, version int64, opt Options) (*Resu
 	res.Elapsed = time.Since(start)
 	res.Fetched, _ = a.Fetched()
 	return res, nil
+}
+
+// parentOf — непосредственный родитель объекта. Муниципальная иерархия
+// предпочтительнее: именно в ней у Москвы лежат районы.
+func parentOf(id int64, mun, adm map[int64]int64) int64 {
+	if p, ok := mun[id]; ok && p != 0 {
+		return p
+	}
+	return adm[id]
 }
 
 // resolveContext поднимается по иерархии и находит район и населённый пункт.
@@ -299,7 +310,7 @@ func loadHouses(
 	log *slog.Logger,
 	houseParent map[int64]int64,
 	posByObject map[int64]uint32,
-) (map[uint32][]string, error) {
+) (map[uint32][]index.HouseRef, error) {
 	log.Info("связи домов", "всего", len(houseParent))
 
 	houseFilter := make(map[int64]bool, len(houseParent))
@@ -307,7 +318,7 @@ func loadHouses(
 		houseFilter[id] = true
 	}
 
-	out := make(map[uint32][]string, len(posByObject))
+	out := make(map[uint32][]index.HouseRef, len(posByObject))
 	for _, e := range a.Entries(gar.KindHouses, opt.Regions) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -326,7 +337,10 @@ func loadHouses(
 					if canon == "" {
 						return
 					}
-					out[pos] = append(out[pos], canon)
+					out[pos] = append(out[pos], index.HouseRef{
+						ObjectID:  h.ObjectID,
+						Canonical: canon,
+					})
 				})
 		})
 		if err != nil {
@@ -373,6 +387,14 @@ func canonicalHouse(h gar.House) string {
 	// получится из пользовательского ввода: регистр, порядок частей.
 	return parse.ParseHouse(string(b)).Canonical()
 }
+
+// StreetTypeOf — тип улицы для объекта ГАР. Экспортируется для дельты:
+// правило должно быть одним и тем же при полной сборке и при обновлении.
+func StreetTypeOf(o gar.Object) string { return streetType(o) }
+
+// CanonicalHouseOf — каноническая форма номера дома из записи ГАР.
+// Экспортируется по той же причине.
+func CanonicalHouseOf(h gar.House) string { return canonicalHouse(h) }
 
 // streetType возвращает тип улицы для объекта ГАР.
 //

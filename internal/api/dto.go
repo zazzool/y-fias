@@ -253,14 +253,26 @@ type ValidateResponse struct {
 
 /* ── geo ───────────────────────────────────────────────────────── */
 
+// GeoRequest — либо готовые координаты, либо адрес.
+//
+// Адресный вариант нужен для того, ради чего геометрия и заводилась: у
+// диспетчера на руках улица и дом, а не широта с долготой.
 type GeoRequest struct {
-	Lon float64 `json:"lon"`
-	Lat float64 `json:"lat"`
+	Lon float64 `json:"lon,omitempty"`
+	Lat float64 `json:"lat,omitempty"`
+
+	Street   string `json:"street,omitempty"`
+	House    string `json:"house,omitempty"`
+	District string `json:"district,omitempty"` // подсказка, если район уже известен
 }
 
 type GeoResponse struct {
 	District string `json:"district,omitempty"`
 	Region   string `json:"region,omitempty"`
+
+	// Lon и Lat возвращаются, когда координата найдена по адресу.
+	Lon float64 `json:"lon,omitempty"`
+	Lat float64 `json:"lat,omitempty"`
 
 	// Confidence — high, если точка попала ровно в одну область.
 	// Пересечение границ означает low: выбирать за человека нельзя.

@@ -29,23 +29,24 @@ import (
 
 func main() {
 	var (
-		addr     = flag.String("addr", ":8080", "адрес прослушивания")
-		snapPath = flag.String("snapshot", "data/gar.yfsnap", "файл справочника")
-		geoPath  = flag.String("geo", "data/geo.json", "файл границ районов")
-		noHouses = flag.Bool("no-houses", false, "не загружать дома (быстрее старт, меньше памяти)")
-		dsn      = flag.String("dsn", "", "строка подключения к PostgreSQL; без неё журнал не ведётся")
+		addr      = flag.String("addr", ":8080", "адрес прослушивания")
+		snapPath  = flag.String("snapshot", "data/gar.yfsnap", "файл справочника")
+		geoPath   = flag.String("geo", "data/geo.json", "файл границ районов")
+		coordPath = flag.String("coords", "data/coords.yfcoord", "файл координат адресов")
+		noHouses  = flag.Bool("no-houses", false, "не загружать дома (быстрее старт, меньше памяти)")
+		dsn       = flag.String("dsn", "", "строка подключения к PostgreSQL; без неё журнал не ведётся")
 	)
 	flag.Parse()
 
 	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-	if err := run(*addr, *snapPath, *geoPath, *dsn, *noHouses, log); err != nil {
+	if err := run(*addr, *snapPath, *geoPath, *coordPath, *dsn, *noHouses, log); err != nil {
 		log.Error("сервис остановлен с ошибкой", "ошибка", err)
 		os.Exit(1)
 	}
 }
 
-func run(addr, snapPath, geoPath, dsn string, noHouses bool, log *slog.Logger) error {
+func run(addr, snapPath, geoPath, coordPath, dsn string, noHouses bool, log *slog.Logger) error {
 	start := time.Now()
 
 	// Справочник загружается ДО открытия порта: сервис, принимающий запросы
@@ -61,6 +62,19 @@ func run(addr, snapPath, geoPath, dsn string, noHouses bool, log *slog.Logger) e
 		// как в старой системе. Отказывать в обслуживании из-за этого нельзя.
 		log.Warn("границы районов не загружены, определение района по координатам недоступно",
 			"причина", err)
+	}
+
+	// Координаты необязательны, как и границы: без них район выводится
+	// прежним способом, по соседним домам.
+	var coords *geo.Coords
+	if coordPath != "" {
+		c, err := geo.ReadCoords(coordPath)
+		if err != nil {
+			log.Warn("координаты адресов не загружены", "причина", err)
+		} else {
+			coords = c
+			log.Info("координаты адресов загружены", "адресов", c.Len())
+		}
 	}
 
 	// База НЕОБЯЗАТЕЛЬНА. Без неё сервис работает полностью — просто не
@@ -114,6 +128,7 @@ func run(addr, snapPath, geoPath, dsn string, noHouses bool, log *slog.Logger) e
 	srv := api.New(api.Options{
 		Snapshots: holder,
 		Areas:     areas,
+		Coords:    coords,
 		Log:       log,
 		Metrics:   metrics,
 		Journal:   journal,

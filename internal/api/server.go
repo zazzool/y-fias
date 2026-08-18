@@ -23,6 +23,7 @@ import (
 type Server struct {
 	snapshots *index.Holder
 	areas     *geo.Index
+	coords    *geo.Coords
 	log       *slog.Logger
 	metrics   *Metrics
 	journal   *store.Journal
@@ -32,8 +33,12 @@ type Server struct {
 type Options struct {
 	Snapshots *index.Holder
 	Areas     *geo.Index
-	Log       *slog.Logger
-	Metrics   *Metrics
+
+	// Coords — координаты адресов. Необязательны: без них район выводится
+	// как прежде, по соседним домам.
+	Coords  *geo.Coords
+	Log     *slog.Logger
+	Metrics *Metrics
 
 	// Journal — необязателен. Без него сервис работает полностью, просто не
 	// накапливает материал для обучения: база не нужна для подсказок.
@@ -52,6 +57,7 @@ func New(opt Options) *Server {
 	return &Server{
 		snapshots: opt.Snapshots,
 		areas:     opt.Areas,
+		coords:    opt.Coords,
 		log:       log,
 		metrics:   m,
 		journal:   opt.Journal,
@@ -328,13 +334,38 @@ func (s *Server) handleGeo(w http.ResponseWriter, r *http.Request) error {
 	if s.areas == nil {
 		return unavailable("границы районов не загружены")
 	}
-	if req.Lat == 0 && req.Lon == 0 {
-		return badRequest("не указаны координаты")
+
+	pt := geo.Point{Lon: req.Lon, Lat: req.Lat}
+	source := parse.SourceUser
+
+	// Координаты по адресу, если они не переданы напрямую.
+	if pt.Lat == 0 && pt.Lon == 0 {
+		if req.Street == "" {
+			return badRequest("не указаны ни координаты, ни улица")
+		}
+		c, ok := s.lookupCoord(req)
+		if !ok {
+			// Честный отказ вместо догадки: без координаты район
+			// определяется прежним способом, по соседним домам, и делать
+			// вид, что мы знаем точно, нельзя.
+			return writeJSON(w, http.StatusOK, GeoResponse{
+				Confidence: "none",
+				Source:     parse.SourceNone.String(),
+			})
+		}
+		pt = geo.Point{Lon: c.Lon, Lat: c.Lat}
+		source = parse.SourceOSM
 	}
 
-	area, matched := s.areas.Locate(geo.Point{Lon: req.Lon, Lat: req.Lat})
+	area, matched := s.areas.Locate(pt)
 
-	resp := GeoResponse{Matched: matched, Source: parse.SourceOSM.String()}
+	resp := GeoResponse{
+		Matched: matched,
+		Source:  parse.SourceOSM.String(),
+		Lon:     pt.Lon,
+		Lat:     pt.Lat,
+	}
+	_ = source
 	switch {
 	case area == nil:
 		resp.Confidence = "none"
@@ -347,6 +378,41 @@ func (s *Server) handleGeo(w http.ResponseWriter, r *http.Request) error {
 		resp.Confidence = "low"
 	}
 	return writeJSON(w, http.StatusOK, resp)
+}
+
+// lookupCoord ищет координату адреса.
+//
+// Сначала по точному дому, затем по улице целиком. Второй путь заметно менее
+// надёжен: на 181 улице, пересекающей границы районов, середина улицы может
+// лежать не в том районе, где стоит дом. Поэтому вызывающий обязан понижать
+// уверенность, а не выдавать такой ответ как точный.
+func (s *Server) lookupCoord(req GeoRequest) (geo.Coord, bool) {
+	if s.coords == nil {
+		return geo.Coord{}, false
+	}
+
+	key := normalize.StreetKey(req.Street)
+	if key == "" {
+		return geo.Coord{}, false
+	}
+
+	if req.House != "" {
+		canon := parse.ParseHouse(req.House).Canonical()
+		if canon != "" {
+			if c, ok := s.coords.Lookup(req.District, key, canon); ok {
+				return c, true
+			}
+			// Дом мог быть записан с другим районом. Смотрим, где он есть
+			// на самом деле: расхождение района — известная беда наших
+			// данных (§2.4 описи).
+			if elsewhere := s.coords.LookupAnyDistrict(key, canon); len(elsewhere) == 1 {
+				for _, c := range elsewhere {
+					return c, true
+				}
+			}
+		}
+	}
+	return geo.Coord{}, false
 }
 
 /* ── служебные ─────────────────────────────────────────────────── */

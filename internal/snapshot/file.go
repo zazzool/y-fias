@@ -31,7 +31,8 @@ import (
 //	01 — первый формат
 //	02 — контрольная сумма покрывает не только пул строк, но и записи
 //	03 — добавлена секция домов
-var magic = [8]byte{'Y', 'F', 'S', 'N', 'A', 'P', '0', '3'}
+//	04 — добавлены идентификаторы ГАР (нужны для дельта-синхронизации)
+var magic = [8]byte{'Y', 'F', 'S', 'N', 'A', 'P', '0', '4'}
 
 // Header — начало файла.
 type Header struct {
@@ -45,12 +46,16 @@ type Header struct {
 // Data — содержимое снапшота.
 type Data struct {
 	Streets []index.Street
-	// Houses — канонические номера домов по позиции улицы.
+	// Houses — дома по позиции улицы.
 	//
 	// Нужны, чтобы отличать «дома нет в справочнике ФНС» от «дом не найден»
 	// (HouseQC), и для вывода района по соседним домам. Хранятся отдельной
 	// секцией: их 2.3 млн против 85 тыс. улиц, и грузить их нужно не всегда.
-	Houses map[uint32][]string
+	//
+	// Тип берётся из index, а не заводится свой: снапшот и так зависит от
+	// index, а два почти одинаковых типа пришлось бы всё время
+	// перекладывать друг в друга.
+	Houses map[uint32][]index.HouseRef
 }
 
 // Write сохраняет улицы в файл.
@@ -105,6 +110,7 @@ func writeTo(w io.Writer, d Data, version int64) (Header, error) {
 	type rec struct {
 		name, typ, region, district, settlement [2]uint32
 		calls                                   uint32
+		objectID, parentID                      int64
 	}
 	recs := make([]rec, len(streets))
 	for i, st := range streets {
@@ -115,6 +121,8 @@ func writeTo(w io.Writer, d Data, version int64) (Header, error) {
 			district:   put(st.District),
 			settlement: put(st.Settlement),
 			calls:      st.Calls,
+			objectID:   st.ObjectID,
+			parentID:   st.ParentID,
 		}
 	}
 
@@ -124,6 +132,7 @@ func writeTo(w io.Writer, d Data, version int64) (Header, error) {
 	// строк им не нужен; хватает одного сплошного буфера с разделителями.
 	var (
 		housePool  []byte
+		houseIDs   []int64
 		houseRange = make([][2]uint32, len(streets))
 		houseCount int
 	)
@@ -134,11 +143,12 @@ func writeTo(w io.Writer, d Data, version int64) (Header, error) {
 		}
 		start := uint32(len(housePool))
 		for _, h := range list {
-			if h == "" {
+			if h.Canonical == "" {
 				continue
 			}
-			housePool = append(housePool, h...)
+			housePool = append(housePool, h.Canonical...)
 			housePool = append(housePool, 0) // разделитель
+			houseIDs = append(houseIDs, h.ObjectID)
 			houseCount++
 		}
 		// Улица, у которой все номера оказались пустыми, диапазона не
@@ -166,6 +176,8 @@ func writeTo(w io.Writer, d Data, version int64) (Header, error) {
 		putPair(scratch[24:], r.district)
 		putPair(scratch[32:], r.settlement)
 		binary.LittleEndian.PutUint32(scratch[40:], r.calls)
+		binary.LittleEndian.PutUint64(scratch[44:], uint64(r.objectID))
+		binary.LittleEndian.PutUint64(scratch[52:], uint64(r.parentID))
 		payload = append(payload, scratch[:]...)
 	}
 
@@ -175,6 +187,14 @@ func writeTo(w io.Writer, d Data, version int64) (Header, error) {
 		payload = append(payload, pair[:]...)
 	}
 	payload = append(payload, housePool...)
+
+	// Идентификаторы домов идут отдельным массивом в том же порядке, что и
+	// строки в пуле: так пул остаётся простым, а разбор — последовательным.
+	var idBuf [8]byte
+	for _, id := range houseIDs {
+		binary.LittleEndian.PutUint64(idBuf[:], uint64(id))
+		payload = append(payload, idBuf[:]...)
+	}
 
 	bw := bufio.NewWriterSize(w, 1<<20)
 	hdr := Header{
@@ -207,8 +227,9 @@ func writeTo(w io.Writer, d Data, version int64) (Header, error) {
 	return hdr, bw.Flush()
 }
 
-// recSize — размер одной записи: пять пар (смещение, длина) плюс счётчик.
-const recSize = 5*8 + 4
+// recSize — размер одной записи: пять пар (смещение, длина), счётчик вызовов
+// и два идентификатора ГАР.
+const recSize = 5*8 + 4 + 8 + 8
 
 func putPair(b []byte, p [2]uint32) {
 	binary.LittleEndian.PutUint32(b, p[0])
@@ -265,7 +286,8 @@ func decode(data []byte) (Data, Header, error) {
 
 	recs := int(hdr.Streets) * recSize
 	ranges := int(hdr.Streets) * 8
-	total := poolLen + recs + ranges + housePoolLen
+	houseIDs := int(hdr.Houses) * 8
+	total := poolLen + recs + ranges + housePoolLen + houseIDs
 	if p+total > len(data) {
 		return out, hdr, fmt.Errorf("файл обрывается: нужно %d байт, есть %d",
 			total, len(data)-p)
@@ -321,6 +343,8 @@ func decode(data []byte) (Data, Header, error) {
 			District:   fields[3],
 			Settlement: fields[4],
 			Calls:      binary.LittleEndian.Uint32(data[base+5*8:]),
+			ObjectID:   int64(binary.LittleEndian.Uint64(data[base+5*8+4:])),
+			ParentID:   int64(binary.LittleEndian.Uint64(data[base+5*8+12:])),
 		}
 	}
 	p += need
@@ -329,9 +353,14 @@ func decode(data []byte) (Data, Header, error) {
 	if hdr.Houses > 0 {
 		rangesAt := p
 		housesAt := p + ranges
+		idsAt := housesAt + housePoolLen
 		housePool := data[housesAt : housesAt+housePoolLen]
 
-		out.Houses = make(map[uint32][]string, hdr.Streets/4)
+		out.Houses = make(map[uint32][]index.HouseRef, hdr.Streets/4)
+
+		// Идентификаторы идут в том же порядке, что и строки в пуле,
+		// поэтому читаются одним последовательным счётчиком.
+		idx := 0
 		for i := range streets {
 			off := binary.LittleEndian.Uint32(data[rangesAt+i*8:])
 			ln := binary.LittleEndian.Uint32(data[rangesAt+i*8+4:])
@@ -341,7 +370,18 @@ func decode(data []byte) (Data, Header, error) {
 			if int(off)+int(ln) > len(housePool) {
 				return out, hdr, fmt.Errorf("улица %d: дома вне пула", i)
 			}
-			out.Houses[uint32(i)] = splitZ(housePool[off : off+ln])
+
+			nums := splitZ(housePool[off : off+ln])
+			list := make([]index.HouseRef, 0, len(nums))
+			for _, n := range nums {
+				var id int64
+				if idx < int(hdr.Houses) {
+					id = int64(binary.LittleEndian.Uint64(data[idsAt+idx*8:]))
+				}
+				idx++
+				list = append(list, index.HouseRef{ObjectID: id, Canonical: n})
+			}
+			out.Houses[uint32(i)] = list
 		}
 	}
 
