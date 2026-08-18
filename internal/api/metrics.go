@@ -21,6 +21,14 @@ type Metrics struct {
 	LayerHits *prometheus.CounterVec
 	Panics    prometheus.Counter
 
+	// ShadowVerdicts — итоги сравнения с прежней системой. Условие выхода
+	// этапа 3 читается прямо отсюда: verdict="worse" должен быть нулём.
+	ShadowVerdicts *prometheus.CounterVec
+
+	// JournalDropped — потерянные события журнала. Потери допустимы (журнал
+	// не должен тормозить подсказки), но обязаны быть видимы.
+	JournalDropped prometheus.GaugeFunc
+
 	SnapshotAge     prometheus.GaugeFunc
 	SnapshotStreets prometheus.GaugeFunc
 }
@@ -56,9 +64,14 @@ func NewMetrics() *Metrics {
 			Name: "yfias_panics_total",
 			Help: "Паники в обработчиках",
 		}),
+
+		ShadowVerdicts: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "yfias_shadow_verdicts_total",
+			Help: "Сравнение с прежней системой: same, better, worse, differ",
+		}, []string{"verdict"}),
 	}
 
-	reg.MustRegister(m.Duration, m.Errors, m.LayerHits, m.Panics)
+	reg.MustRegister(m.Duration, m.Errors, m.LayerHits, m.Panics, m.ShadowVerdicts)
 	return m
 }
 
@@ -78,6 +91,16 @@ func (m *Metrics) BindSnapshot(age func() time.Duration, streets func() int) {
 	}, func() float64 { return float64(streets()) })
 
 	m.registry.MustRegister(m.SnapshotAge, m.SnapshotStreets)
+}
+
+// BindJournal подключает метрику потерянных событий.
+func (m *Metrics) BindJournal(dropped func() int64) {
+	m.JournalDropped = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Name: "yfias_journal_dropped_total",
+		Help: "События журнала, потерянные из-за переполнения буфера",
+	}, func() float64 { return float64(dropped()) })
+
+	m.registry.MustRegister(m.JournalDropped)
 }
 
 func (m *Metrics) observe(method string, took time.Duration, err error) {

@@ -12,6 +12,7 @@ import (
 	"github.com/zazzool/y-fias/internal/index"
 	"github.com/zazzool/y-fias/internal/normalize"
 	"github.com/zazzool/y-fias/internal/parse"
+	"github.com/zazzool/y-fias/internal/store"
 )
 
 // Server обслуживает адресные запросы.
@@ -24,6 +25,7 @@ type Server struct {
 	areas     *geo.Index
 	log       *slog.Logger
 	metrics   *Metrics
+	journal   *store.Journal
 	started   time.Time
 }
 
@@ -32,6 +34,10 @@ type Options struct {
 	Areas     *geo.Index
 	Log       *slog.Logger
 	Metrics   *Metrics
+
+	// Journal — необязателен. Без него сервис работает полностью, просто не
+	// накапливает материал для обучения: база не нужна для подсказок.
+	Journal *store.Journal
 }
 
 func New(opt Options) *Server {
@@ -48,6 +54,7 @@ func New(opt Options) *Server {
 		areas:     opt.Areas,
 		log:       log,
 		metrics:   m,
+		journal:   opt.Journal,
 		started:   time.Now(),
 	}
 }
@@ -60,6 +67,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/parse", s.wrap("parse", s.handleParse))
 	mux.HandleFunc("POST /v1/validate", s.wrap("validate", s.handleValidate))
 	mux.HandleFunc("POST /v1/geo", s.wrap("geo", s.handleGeo))
+	mux.HandleFunc("POST /v1/shadow", s.wrap("shadow", s.handleShadow))
 
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /readyz", s.handleReady)
@@ -142,15 +150,19 @@ func (s *Server) handleSuggest(w http.ResponseWriter, r *http.Request) error {
 		PatientStreets: resolvePatientStreets(snap, req.PatientStreets),
 	})
 
+	took := time.Since(start)
+
 	items := make([]Suggestion, 0, len(res))
 	for _, r := range res {
 		items = append(items, suggestionOf(r))
 		s.metrics.LayerHits.WithLabelValues(r.Layer.String()).Inc()
 	}
 
+	s.journalSuggest(req, res, snap, took)
+
 	return writeJSON(w, http.StatusOK, SuggestResponse{
 		Items: items,
-		Took:  time.Since(start).Round(time.Microsecond).String(),
+		Took:  took.Round(time.Microsecond).String(),
 	})
 }
 

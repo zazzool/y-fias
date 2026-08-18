@@ -21,6 +21,10 @@ build: ## Собрать все бинарники в bin/
 serve: ## Запустить сервис на собранных данных
 	go run ./cmd/yfias -addr=:8080
 
+.PHONY: serve-db
+serve-db: db-up ## Запустить сервис с журналом событий в PostgreSQL
+	go run ./cmd/yfias -addr=:8080 		-dsn="postgres://yfias:yfias@localhost:55432/yfias_test?sslmode=disable"
+
 .PHONY: generate
 generate: ## Перегенерировать sql/normalize.sql из Go
 	go generate ./...

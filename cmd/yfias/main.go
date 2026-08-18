@@ -24,6 +24,7 @@ import (
 	"github.com/zazzool/y-fias/internal/geo"
 	"github.com/zazzool/y-fias/internal/index"
 	"github.com/zazzool/y-fias/internal/snapshot"
+	"github.com/zazzool/y-fias/internal/store"
 )
 
 func main() {
@@ -32,18 +33,19 @@ func main() {
 		snapPath = flag.String("snapshot", "data/gar.yfsnap", "файл справочника")
 		geoPath  = flag.String("geo", "data/geo.json", "файл границ районов")
 		noHouses = flag.Bool("no-houses", false, "не загружать дома (быстрее старт, меньше памяти)")
+		dsn      = flag.String("dsn", "", "строка подключения к PostgreSQL; без неё журнал не ведётся")
 	)
 	flag.Parse()
 
 	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-	if err := run(*addr, *snapPath, *geoPath, *noHouses, log); err != nil {
+	if err := run(*addr, *snapPath, *geoPath, *dsn, *noHouses, log); err != nil {
 		log.Error("сервис остановлен с ошибкой", "ошибка", err)
 		os.Exit(1)
 	}
 }
 
-func run(addr, snapPath, geoPath string, noHouses bool, log *slog.Logger) error {
+func run(addr, snapPath, geoPath, dsn string, noHouses bool, log *slog.Logger) error {
 	start := time.Now()
 
 	// Справочник загружается ДО открытия порта: сервис, принимающий запросы
@@ -61,6 +63,36 @@ func run(addr, snapPath, geoPath string, noHouses bool, log *slog.Logger) error 
 			"причина", err)
 	}
 
+	// База НЕОБЯЗАТЕЛЬНА. Без неё сервис работает полностью — просто не
+	// накапливает материал для обучения. Отказывать в подсказках из-за
+	// недоступности журнала было бы прямо противоположно §9.1 архитектуры,
+	// ради которого справочник и держится в памяти.
+	var journal *store.Journal
+	if dsn != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		st, err := store.Open(ctx, dsn)
+		cancel()
+
+		if err != nil {
+			log.Warn("база недоступна, журнал событий не ведётся", "причина", err)
+		} else {
+			mctx, mcancel := context.WithTimeout(context.Background(), time.Minute)
+			err := st.Migrate(mctx)
+			mcancel()
+			if err != nil {
+				log.Warn("миграции не накатились, журнал не ведётся", "причина", err)
+				st.Close()
+			} else {
+				journal = store.NewJournal(st, store.JournalOptions{Log: log})
+				defer func() {
+					journal.Close()
+					st.Close()
+				}()
+				log.Info("журнал событий включён")
+			}
+		}
+	}
+
 	metrics := api.NewMetrics()
 	metrics.BindSnapshot(
 		holder.Age,
@@ -72,11 +104,19 @@ func run(addr, snapPath, geoPath string, noHouses bool, log *slog.Logger) error 
 		},
 	)
 
+	if journal != nil {
+		metrics.BindJournal(func() int64 {
+			_, dropped := journal.Stats()
+			return dropped
+		})
+	}
+
 	srv := api.New(api.Options{
 		Snapshots: holder,
 		Areas:     areas,
 		Log:       log,
 		Metrics:   metrics,
+		Journal:   journal,
 	})
 
 	httpSrv := &http.Server{
