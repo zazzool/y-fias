@@ -75,8 +75,12 @@ snapshot: ## Собрать снапшот ГАР (регионы 77 и 50, с �
 geo: ## Загрузить границы районов из OpenStreetMap
 	go run ./cmd/yfias-geo -regions=77,50 -out=data/geo.json
 
+.PHONY: osmaddr
+osmaddr: ## Выгрузить адресные точки Московской области по районам (~100 минут)
+	go run ./cmd/yfias-osmaddr -region=50 -out=data/osm/addr50.jsonl
+
 .PHONY: coords
-coords: ## Собрать координаты адресов (нужен выгруженный ответ Overpass)
+coords: ## Собрать координаты адресов из выгрузок OSM
 	go run ./cmd/yfias-geocode
 
 .PHONY: sync

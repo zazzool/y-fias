@@ -25,6 +25,7 @@ import (
 	"github.com/zazzool/y-fias/internal/index"
 	"github.com/zazzool/y-fias/internal/snapshot"
 	"github.com/zazzool/y-fias/internal/store"
+	ysync "github.com/zazzool/y-fias/internal/sync"
 )
 
 func main() {
@@ -35,18 +36,20 @@ func main() {
 		coordPath = flag.String("coords", "data/coords.yfcoord", "файл координат адресов")
 		noHouses  = flag.Bool("no-houses", false, "не загружать дома (быстрее старт, меньше памяти)")
 		dsn       = flag.String("dsn", "", "строка подключения к PostgreSQL; без неё журнал не ведётся")
+		syncEvery = flag.Duration("sync", 0,
+			"как часто догонять справочник дельтами; 0 — не синхронизировать")
 	)
 	flag.Parse()
 
 	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-	if err := run(*addr, *snapPath, *geoPath, *coordPath, *dsn, *noHouses, log); err != nil {
+	if err := run(*addr, *snapPath, *geoPath, *coordPath, *dsn, *syncEvery, *noHouses, log); err != nil {
 		log.Error("сервис остановлен с ошибкой", "ошибка", err)
 		os.Exit(1)
 	}
 }
 
-func run(addr, snapPath, geoPath, coordPath, dsn string, noHouses bool, log *slog.Logger) error {
+func run(addr, snapPath, geoPath, coordPath, dsn string, syncEvery time.Duration, noHouses bool, log *slog.Logger) error {
 	start := time.Now()
 
 	// Справочник загружается ДО открытия порта: сервис, принимающий запросы
@@ -81,22 +84,26 @@ func run(addr, snapPath, geoPath, coordPath, dsn string, noHouses bool, log *slo
 	// накапливает материал для обучения. Отказывать в подсказках из-за
 	// недоступности журнала было бы прямо противоположно §9.1 архитектуры,
 	// ради которого справочник и держится в памяти.
-	var journal *store.Journal
+	var (
+		journal *store.Journal
+		st      *store.Store
+	)
 	if dsn != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		st, err := store.Open(ctx, dsn)
+		opened, err := store.Open(ctx, dsn)
 		cancel()
 
 		if err != nil {
 			log.Warn("база недоступна, журнал событий не ведётся", "причина", err)
 		} else {
 			mctx, mcancel := context.WithTimeout(context.Background(), time.Minute)
-			err := st.Migrate(mctx)
+			err := opened.Migrate(mctx)
 			mcancel()
 			if err != nil {
 				log.Warn("миграции не накатились, журнал не ведётся", "причина", err)
-				st.Close()
+				opened.Close()
 			} else {
+				st = opened
 				journal = store.NewJournal(st, store.JournalOptions{Log: log})
 				defer func() {
 					journal.Close()
@@ -123,6 +130,25 @@ func run(addr, snapPath, geoPath, coordPath, dsn string, noHouses bool, log *slo
 			_, dropped := journal.Stats()
 			return dropped
 		})
+	}
+
+	// Планировщик синхронизации. Работает в фоне и не мешает обслуживанию:
+	// пока идёт обновление, сервис отвечает на текущем справочнике.
+	//
+	// По умолчанию ВЫКЛЮЧЕН: обновление справочника — действие, которое
+	// владелец должен включить осознанно, а не получить в наследство от
+	// значения по умолчанию.
+	if syncEvery > 0 {
+		sched := ysync.NewScheduler(ysync.SchedulerOptions{
+			Holder:   holder,
+			Store:    st,
+			Log:      log,
+			SnapPath: snapPath,
+			Interval: syncEvery,
+		})
+		sched.Start()
+		defer sched.Stop()
+		log.Info("синхронизация включена", "период", syncEvery.String())
 	}
 
 	srv := api.New(api.Options{

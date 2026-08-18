@@ -77,6 +77,15 @@ func buildQuery(areaID int64, levels []int) string {
 	return b.String()
 }
 
+// PostOverpass выполняет произвольный запрос к Overpass с повторами.
+//
+// Экспортируется, потому что адресные точки выгружаются отдельной командой:
+// логика повторов у них общая, а дублировать её значило бы получить две
+// разные политики отношения к чужой квоте.
+func PostOverpass(ctx context.Context, client *http.Client, query string) ([]byte, error) {
+	return post(ctx, client, query)
+}
+
 // post выполняет запрос с повторами при 429 и 504.
 func post(ctx context.Context, client *http.Client, query string) ([]byte, error) {
 	const attempts = 6

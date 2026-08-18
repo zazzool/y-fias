@@ -10,6 +10,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -27,7 +28,8 @@ import (
 
 func main() {
 	var (
-		in       = flag.String("in", "data/osm/moscow_addr.json", "ответ Overpass с адресными точками")
+		in = flag.String("in", "data/osm/moscow_addr.json,data/osm/addr50.jsonl",
+			"файлы с адресными точками через запятую: ответ Overpass (.json) или порайонная выгрузка (.jsonl)")
 		out      = flag.String("out", "data/coords.yfcoord", "куда положить координаты")
 		geoPath  = flag.String("geo", "data/geo.json", "границы районов")
 		snapPath = flag.String("snapshot", "data/gar.yfsnap", "справочник для сверки покрытия")
@@ -57,19 +59,29 @@ type overpassElement struct {
 func run(log *slog.Logger, in, out, geoPath, snapPath string) error {
 	start := time.Now()
 
-	f, err := os.Open(in)
-	if err != nil {
-		return fmt.Errorf("чтение %s: %w", in, err)
+	// Источников может быть несколько: Москва выгружается одним запросом, а
+	// область — по районам, потому что целиком она не помещается в ответ
+	// публичного Overpass.
+	var points []rawPoint
+	for _, path := range strings.Split(in, ",") {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		got, err := readPoints(path)
+		if err != nil {
+			// Отсутствие одного источника не должно ронять сборку: область
+			// может быть ещё не выгружена.
+			log.Warn("источник пропущен", "файл", path, "причина", err)
+			continue
+		}
+		log.Info("источник прочитан", "файл", path, "точек", len(got))
+		points = append(points, got...)
 	}
-	defer f.Close()
-
-	var resp struct {
-		Elements []overpassElement `json:"elements"`
+	if len(points) == 0 {
+		return fmt.Errorf("не прочитано ни одной адресной точки")
 	}
-	if err := json.NewDecoder(f).Decode(&resp); err != nil {
-		return fmt.Errorf("разбор %s: %w", in, err)
-	}
-	log.Info("адресные точки прочитаны", "всего", len(resp.Elements))
+	log.Info("адресные точки прочитаны", "всего", len(points))
 
 	// Район точки определяется её же координатой. Иначе ключ адреса не
 	// уникален: «Центральная улица, 1» есть в сотнях населённых пунктов, и
@@ -91,18 +103,14 @@ func run(log *slog.Logger, in, out, geoPath, snapPath string) error {
 		districts = map[string]int{}
 	)
 
-	for _, el := range resp.Elements {
-		lat, lon := el.Lat, el.Lon
-		if el.Center != nil {
-			lat, lon = el.Center.Lat, el.Center.Lon
-		}
+	for _, pt := range points {
+		lat, lon := pt.Lat, pt.Lon
 		if lat == 0 && lon == 0 {
 			noCoord++
 			continue
 		}
 
-		street := el.Tags["addr:street"]
-		house := el.Tags["addr:housenumber"]
+		street, house := pt.Street, pt.House
 		if street == "" || house == "" {
 			noParse++
 			continue
@@ -172,11 +180,83 @@ func run(log *slog.Logger, in, out, geoPath, snapPath string) error {
 
 	if snapPath != "" {
 		reportCoverage(log, snapPath, back)
-		reportOurCoverage(log, back)
+		reportOurCoverage(log, back, regionOfDistrict(areas))
 	}
 
 	log.Info("готово", "за", time.Since(start).Round(time.Second).String())
 	return nil
+}
+
+// rawPoint — адресная точка независимо от формата источника.
+type rawPoint struct {
+	Lon, Lat      float64
+	Street, House string
+}
+
+// readPoints читает точки из ответа Overpass (.json) или из порайонной
+// выгрузки (.jsonl).
+func readPoints(path string) ([]rawPoint, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	if strings.HasSuffix(path, ".jsonl") {
+		return readJSONL(f)
+	}
+
+	var resp struct {
+		Elements []overpassElement `json:"elements"`
+	}
+	if err := json.NewDecoder(f).Decode(&resp); err != nil {
+		return nil, fmt.Errorf("разбор: %w", err)
+	}
+
+	out := make([]rawPoint, 0, len(resp.Elements))
+	for _, el := range resp.Elements {
+		lat, lon := el.Lat, el.Lon
+		if el.Center != nil {
+			lat, lon = el.Center.Lat, el.Center.Lon
+		}
+		out = append(out, rawPoint{
+			Lon: lon, Lat: lat,
+			Street: el.Tags["addr:street"],
+			House:  el.Tags["addr:housenumber"],
+		})
+	}
+	return out, nil
+}
+
+func readJSONL(f *os.File) ([]rawPoint, error) {
+	sc := bufio.NewScanner(f)
+	// Строка — целый район, она может быть в десятки мегабайт.
+	sc.Buffer(make([]byte, 1<<20), 256<<20)
+
+	var out []rawPoint
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" {
+			continue
+		}
+		var rec struct {
+			Points []struct {
+				Lon    float64 `json:"lon"`
+				Lat    float64 `json:"lat"`
+				Street string  `json:"street"`
+				House  string  `json:"house"`
+			} `json:"points"`
+		}
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			// Оборванная строка от прерванной выгрузки: пропускаем, район
+			// доберётся повторным запуском.
+			continue
+		}
+		for _, p := range rec.Points {
+			out = append(out, rawPoint{Lon: p.Lon, Lat: p.Lat, Street: p.Street, House: p.House})
+		}
+	}
+	return out, sc.Err()
 }
 
 // reportCoverage показывает, для скольких домов справочника нашлись координаты.
@@ -227,7 +307,34 @@ func reportCoverage(log *slog.Logger, snapPath string, c *geo.Coords) {
 // reportOurCoverage — главное число: для скольких НАШИХ адресов нашлась
 // координата. Покрытие справочника ГАР интересно куда меньше: в нём вся
 // область, а вызовы идут по нашим 10 694 адресам.
-func reportOurCoverage(log *slog.Logger, c *geo.Coords) {
+// regionOfDistrict — к какому региону относится район.
+//
+// Нужна, чтобы отличить настоящее расхождение от совпадения названий между
+// регионами: «Дмитровский проезд, 18» есть и в Москве, и в Талдомском
+// городском округе, и это не ошибка наших данных.
+func regionOfDistrict(ix *geo.Index) map[string]string {
+	out := map[string]string{}
+	for _, a := range ix.Areas() {
+		out[normDistrictName(a.Name)] = a.Region
+	}
+	return out
+}
+
+func normDistrictName(s string) string {
+	out := make([]rune, 0, len(s))
+	for _, r := range strings.ToLower(s) {
+		if r == 'ё' {
+			r = 'е'
+		}
+		if r == '-' {
+			r = ' '
+		}
+		out = append(out, r)
+	}
+	return strings.Join(strings.Fields(string(out)), " ")
+}
+
+func reportOurCoverage(log *slog.Logger, c *geo.Coords, regionOf map[string]string) {
 	rows, err := readOurAddresses()
 	if err != nil {
 		log.Warn("golden-корпус недоступен, покрытие наших адресов не посчитано",
@@ -238,6 +345,7 @@ func reportOurCoverage(log *slog.Logger, c *geo.Coords) {
 	var (
 		withCoord     int
 		wrongDistrict int
+		otherRegion   int
 		notFound      int
 		examples      []string
 	)
@@ -252,21 +360,33 @@ func reportOurCoverage(log *slog.Logger, c *geo.Coords) {
 			continue
 		}
 
-		// Адрес не нашёлся в записанном районе. Возможны два случая: точки
-		// нет вовсе или она есть, но в ДРУГОМ районе. Второй случай означает,
-		// что записанный у нас район, скорее всего, неверен.
-		if elsewhere := c.LookupAnyDistrict(key, canon); len(elsewhere) > 0 {
-			wrongDistrict++
-			if len(examples) < 12 {
-				for d := range elsewhere {
-					examples = append(examples,
-						fmt.Sprintf("%s, %s: у нас %q, по координате %q",
-							r.street, r.house, r.district, d))
-					break
-				}
-			}
-		} else {
+		// Адрес не нашёлся в записанном районе. Возможны три случая:
+		// точки нет вовсе; она есть в другом районе ТОГО ЖЕ региона — тогда
+		// записанный у нас район, скорее всего, неверен; она есть в другом
+		// РЕГИОНЕ — а это просто совпадение названий, и находкой не является.
+		elsewhere := c.LookupAnyDistrict(key, canon)
+		if len(elsewhere) == 0 {
 			notFound++
+			continue
+		}
+
+		var sameRegion string
+		for d := range elsewhere {
+			if regionOf[normDistrictName(d)] == r.region {
+				sameRegion = d
+				break
+			}
+		}
+		if sameRegion == "" {
+			otherRegion++
+			continue
+		}
+
+		wrongDistrict++
+		if len(examples) < 12 {
+			examples = append(examples,
+				fmt.Sprintf("%s, %s: у нас %q, по координате %q",
+					r.street, r.house, r.district, sameRegion))
 		}
 	}
 
@@ -275,6 +395,7 @@ func reportOurCoverage(log *slog.Logger, c *geo.Coords) {
 		"с координатой", withCoord,
 		"доля", fmt.Sprintf("%.1f%%", 100*float64(withCoord)/float64(len(rows))),
 		"район расходится", wrongDistrict,
+		"совпадение имён в другом регионе", otherRegion,
 		"точки нет", notFound)
 
 	for _, e := range examples {
@@ -282,7 +403,7 @@ func reportOurCoverage(log *slog.Logger, c *geo.Coords) {
 	}
 }
 
-type ourAddress struct{ street, house, district string }
+type ourAddress struct{ street, house, district, region string }
 
 func readOurAddresses() ([]ourAddress, error) {
 	data, err := os.ReadFile("testdata/golden/addresses.csv")
@@ -301,7 +422,9 @@ func readOurAddresses() ([]ourAddress, error) {
 		if len(f) < 5 || f[3] == "" {
 			continue
 		}
-		out = append(out, ourAddress{street: f[3], house: f[4], district: f[2]})
+		out = append(out, ourAddress{
+			street: f[3], house: f[4], district: f[2], region: f[1],
+		})
 	}
 	return out, nil
 }
