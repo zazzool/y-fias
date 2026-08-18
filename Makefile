@@ -60,8 +60,12 @@ replay: ## Прогон golden-корпуса: букв до подсказки,
 	go run ./cmd/yfias-replay -golden=testdata/golden
 
 .PHONY: snapshot
-snapshot: ## Собрать снапшот ГАР и геометрии
-	go run ./cmd/yfias-ingest -out=data
+snapshot: ## Собрать снапшот ГАР (регионы 77 и 50, с домами)
+	go run ./cmd/yfias-ingest -regions=77,50 -houses -out=data/gar.yfsnap
+
+.PHONY: geo
+geo: ## Загрузить границы районов из OpenStreetMap
+	go run ./cmd/yfias-geo -regions=77,50 -out=data/geo.json
 
 .PHONY: db-up
 db-up: ## Поднять локальный PostgreSQL для тестов
