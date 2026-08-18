@@ -17,6 +17,10 @@ help: ## Показать этот список
 build: ## Собрать все бинарники в bin/
 	go build $(GOFLAGS) -o $(BIN)/ ./cmd/...
 
+.PHONY: serve
+serve: ## Запустить сервис на собранных данных
+	go run ./cmd/yfias -addr=:8080
+
 .PHONY: generate
 generate: ## Перегенерировать sql/normalize.sql из Go
 	go generate ./...
