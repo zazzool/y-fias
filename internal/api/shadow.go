@@ -60,6 +60,11 @@ func (s *Server) handleShadow(w http.ResponseWriter, r *http.Request) error {
 
 	var cmp shadow.Comparison
 
+	// Обе выдачи целиком уходят в журнал вместе с вердиктом. Повторить запрос
+	// позже и увидеть то же самое нельзя: справочник обновляется, веса
+	// меняются, и разбирать расхождение пришлось бы по памяти.
+	var oursList []string
+
 	switch req.Method {
 	case "house":
 		if req.House == "" {
@@ -80,6 +85,10 @@ func (s *Server) handleShadow(w http.ResponseWriter, r *http.Request) error {
 			Limit:  maxInt(len(req.Legacy), 10),
 			Region: req.Region,
 		})
+		oursList = make([]string, 0, len(ours))
+		for _, r := range ours {
+			oursList = append(oursList, r.Street.Full())
+		}
 		cmp = shadow.CompareSuggest(shadow.SuggestCase{
 			Query:  req.Query,
 			Legacy: req.Legacy,
@@ -108,6 +117,8 @@ func (s *Server) handleShadow(w http.ResponseWriter, r *http.Request) error {
 				"ours_top":    cmp.OursTop,
 				"legacy_rank": cmp.LegacyRank,
 				"ours_rank":   cmp.OursRank,
+				"legacy_list": req.Legacy,
+				"ours_list":   oursList,
 			},
 		})
 	}

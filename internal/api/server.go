@@ -27,6 +27,7 @@ type Server struct {
 	log       *slog.Logger
 	metrics   *Metrics
 	journal   *store.Journal
+	store     *store.Store
 	started   time.Time
 }
 
@@ -43,6 +44,10 @@ type Options struct {
 	// Journal — необязателен. Без него сервис работает полностью, просто не
 	// накапливает материал для обучения: база не нужна для подсказок.
 	Journal *store.Journal
+
+	// Store — чтение накопленного журнала (отчёт по теневому режиму).
+	// Тоже необязателен: без него отвечают все методы, кроме отчётных.
+	Store *store.Store
 }
 
 func New(opt Options) *Server {
@@ -61,6 +66,7 @@ func New(opt Options) *Server {
 		log:       log,
 		metrics:   m,
 		journal:   opt.Journal,
+		store:     opt.Store,
 		started:   time.Now(),
 	}
 }
@@ -74,6 +80,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/validate", s.wrap("validate", s.handleValidate))
 	mux.HandleFunc("POST /v1/geo", s.wrap("geo", s.handleGeo))
 	mux.HandleFunc("POST /v1/shadow", s.wrap("shadow", s.handleShadow))
+
+	// Чтение теневого журнала. Обслуживает админскую страницу МИС; проверку
+	// прав делает МИС, проксируя запрос своим авторизованным маршрутом.
+	mux.HandleFunc("GET /v1/shadow/report", s.wrap("shadow_report", s.handleShadowReport))
+	mux.HandleFunc("GET /v1/shadow/cases", s.wrap("shadow_cases", s.handleShadowCases))
+	mux.HandleFunc("POST /v1/shadow/review", s.wrap("shadow_review", s.handleShadowReview))
 
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /readyz", s.handleReady)

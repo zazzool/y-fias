@@ -158,6 +158,7 @@ func run(addr, snapPath, geoPath, coordPath, dsn string, syncEvery time.Duration
 		Log:       log,
 		Metrics:   metrics,
 		Journal:   journal,
+		Store:     st,
 	})
 
 	httpSrv := &http.Server{
