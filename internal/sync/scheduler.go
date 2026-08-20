@@ -28,6 +28,7 @@ import (
 type Scheduler struct {
 	holder   *index.Holder
 	store    *store.Store
+	mis      *store.Store
 	log      *slog.Logger
 	client   *http.Client
 	snapPath string
@@ -48,8 +49,14 @@ type Scheduler struct {
 }
 
 type SchedulerOptions struct {
-	Holder   *index.Holder
-	Store    *store.Store
+	Holder *index.Holder
+
+	// Store — наша база: журнал версий и очередь расхождений.
+	Store *store.Store
+	// MIS — база МИС, ТОЛЬКО НА ЧТЕНИЕ. Отдельное подключение, а не то же
+	// самое: до этапа 5 таблица addresses принадлежит МИС, и случайная
+	// запись в неё должна требовать осознанного действия.
+	MIS      *store.Store
 	Log      *slog.Logger
 	SnapPath string
 	Regions  []string
@@ -74,6 +81,7 @@ func NewScheduler(opt SchedulerOptions) *Scheduler {
 	return &Scheduler{
 		holder:   opt.Holder,
 		store:    opt.Store,
+		mis:      opt.MIS,
 		log:      opt.Log,
 		client:   &http.Client{Timeout: 20 * time.Minute},
 		snapPath: opt.SnapPath,
@@ -309,7 +317,10 @@ func (s *Scheduler) reconcile(ctx context.Context, newSnap *index.Snapshot) Repo
 		return rep
 	}
 
-	rows, err := s.store.OurAddresses(ctx)
+	if s.mis == nil {
+		return rep
+	}
+	rows, err := s.mis.OurAddresses(ctx)
 	if err != nil {
 		s.log.Warn("адреса МИС недоступны, сверка пропущена", "причина", err)
 		return rep

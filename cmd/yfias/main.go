@@ -35,7 +35,9 @@ func main() {
 		geoPath   = flag.String("geo", "data/geo.json", "файл границ районов")
 		coordPath = flag.String("coords", "data/coords.yfcoord", "файл координат адресов")
 		noHouses  = flag.Bool("no-houses", false, "не загружать дома (быстрее старт, меньше памяти)")
-		dsn       = flag.String("dsn", "", "строка подключения к PostgreSQL; без неё журнал не ведётся")
+		dsn       = flag.String("dsn", "", "своя база: журнал событий, версии, очередь ревью")
+		misDSN    = flag.String("mis-dsn", "",
+			"база МИС ТОЛЬКО НА ЧТЕНИЕ: адреса для сверки. Отдельно от -dsn намеренно")
 		syncEvery = flag.Duration("sync", 0,
 			"как часто догонять справочник дельтами; 0 — не синхронизировать")
 	)
@@ -43,13 +45,36 @@ func main() {
 
 	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-	if err := run(*addr, *snapPath, *geoPath, *coordPath, *dsn, *syncEvery, *noHouses, log); err != nil {
+	if err := run(runConfig{
+		addr: *addr, snapPath: *snapPath, geoPath: *geoPath, coordPath: *coordPath,
+		dsn: *dsn, misDSN: *misDSN, syncEvery: *syncEvery, noHouses: *noHouses,
+	}, log); err != nil {
 		log.Error("сервис остановлен с ошибкой", "ошибка", err)
 		os.Exit(1)
 	}
 }
 
-func run(addr, snapPath, geoPath, coordPath, dsn string, syncEvery time.Duration, noHouses bool, log *slog.Logger) error {
+// runConfig — настройки запуска.
+//
+// Две строки подключения намеренно разные. Своя база принадлежит сервису и в
+// неё пишется журнал; база МИС читается и НИКОГДА не пишется — до этапа 5
+// таблица addresses принадлежит МИС. Разделение на уровне конфигурации делает
+// это правило видимым при выкладке, а не только в комментарии к коду.
+type runConfig struct {
+	addr      string
+	snapPath  string
+	geoPath   string
+	coordPath string
+	dsn       string
+	misDSN    string
+	syncEvery time.Duration
+	noHouses  bool
+}
+
+func run(cfg runConfig, log *slog.Logger) error {
+	addr, snapPath, geoPath := cfg.addr, cfg.snapPath, cfg.geoPath
+	coordPath, dsn, syncEvery, noHouses := cfg.coordPath, cfg.dsn, cfg.syncEvery, cfg.noHouses
+
 	start := time.Now()
 
 	// Справочник загружается ДО открытия порта: сервис, принимающий запросы
@@ -139,9 +164,26 @@ func run(addr, snapPath, geoPath, coordPath, dsn string, syncEvery time.Duration
 	// владелец должен включить осознанно, а не получить в наследство от
 	// значения по умолчанию.
 	if syncEvery > 0 {
+		// Адреса МИС читаются из ОТДЕЛЬНОГО подключения и только на чтение.
+		var misStore *store.Store
+		if cfg.misDSN != "" {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			ms, err := store.Open(ctx, cfg.misDSN)
+			cancel()
+			if err != nil {
+				log.Warn("база МИС недоступна, сверка адресов не выполняется",
+					"причина", err)
+			} else {
+				misStore = ms
+				defer ms.Close()
+				log.Info("подключение к базе МИС (только чтение) установлено")
+			}
+		}
+
 		sched := ysync.NewScheduler(ysync.SchedulerOptions{
 			Holder:   holder,
 			Store:    st,
+			MIS:      misStore,
 			Log:      log,
 			SnapPath: snapPath,
 			Interval: syncEvery,
