@@ -12,6 +12,10 @@
 | [`docs/01-competitors.md`](docs/01-competitors.md) | конкурентный анализ: что берём, чего избегаем, где выигрываем |
 | [`docs/02-architecture.md`](docs/02-architecture.md) | архитектура сервиса |
 | [`docs/03-roadmap.md`](docs/03-roadmap.md) | план реализации по этапам |
+| [`docs/04-stage0-findings.md`](docs/04-stage0-findings.md) | этап 0: результаты замеров |
+| [`docs/05-shadow.md`](docs/05-shadow.md) | теневой режим: что добавить в МИС |
+| [`docs/06-deploy.md`](docs/06-deploy.md) | выкладка для теневой работы |
+| [`deploy/docker-compose.prod.yml`](deploy/docker-compose.prod.yml) | compose для прода (теневой режим) |
 
 ## Суть решения в трёх пунктах
 
