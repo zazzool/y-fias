@@ -162,7 +162,7 @@ func readCSV(path string) ([][]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	r := csv.NewReader(f)
 	r.FieldsPerRecord = -1
@@ -278,12 +278,6 @@ func tuneWeights(idx *index.Snapshot, limit int) error {
 	measure(idx, base, limit).print("  по умолчанию")
 	fmt.Println()
 
-	type result struct {
-		w index.Weights
-		m metrics
-	}
-	var all []result
-
 	// Покоординатный перебор: полная сетка из 60 сочетаний на 8 тысячах улиц
 	// заняла бы часы, а выигрыш от совместного перебора здесь невелик.
 	cur := base
@@ -295,7 +289,6 @@ func tuneWeights(idx *index.Snapshot, limit int) error {
 			cand := cur
 			dim.set(&cand, v)
 			m := measure(idx, cand, limit)
-			all = append(all, result{cand, m})
 
 			fmt.Printf("  %-10s = %5.1f -> ", dim.name, v)
 			m.print("")

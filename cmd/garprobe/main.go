@@ -146,7 +146,7 @@ func peekEntries(zr *zip.Reader, want map[string]bool, ra *garzip.HTTPReaderAt) 
 		}
 		buf := make([]byte, peekBytes)
 		n, _ := io.ReadFull(rc, buf)
-		rc.Close()
+		_ = rc.Close()
 
 		fmt.Printf("\n=== %s (%s)\n", e.kind, coreKinds[e.kind])
 		fmt.Printf("    %s, %s в архиве\n\n", f.Name, humanBytes(int64(f.CompressedSize64)))
@@ -322,7 +322,7 @@ func latestGarURL(ctx context.Context, client *http.Client) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("запрос к API ФНС: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var info struct {
 		GarXMLFullURL string `json:"GarXMLFullURL"`

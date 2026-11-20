@@ -45,7 +45,7 @@ func NewHTTPReaderAt(ctx context.Context, client *http.Client, url string) (*HTT
 	if err != nil {
 		return nil, fmt.Errorf("HEAD %s: %w", url, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HEAD %s: код %d", url, resp.StatusCode)
@@ -121,7 +121,7 @@ func (r *HTTPReaderAt) fetch(p []byte, off, end int64) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// 206 — сервер учёл Range. 200 означает, что он его проигнорировал и шлёт
 	// весь файл: 53 ГБ в буфер на несколько килобайт. Обрываем немедленно.

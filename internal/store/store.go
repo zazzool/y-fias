@@ -71,7 +71,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 	goose.SetLogger(goose.NopLogger())
 
 	db := stdlib.OpenDBFromPool(s.pool)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	if err := goose.UpContext(ctx, db, "migrations"); err != nil {
 		return fmt.Errorf("накат миграций: %w", err)
@@ -82,6 +82,6 @@ func (s *Store) Migrate(ctx context.Context) error {
 // Version — текущая версия схемы.
 func (s *Store) Version(ctx context.Context) (int64, error) {
 	db := stdlib.OpenDBFromPool(s.pool)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	return goose.GetDBVersionContext(ctx, db)
 }

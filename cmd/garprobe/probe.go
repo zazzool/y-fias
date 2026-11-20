@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"errors"
+
 	"github.com/zazzool/y-fias/internal/garzip"
 )
 
@@ -106,7 +108,7 @@ func parseEntry(f *zip.File, kind string, res *probeResult) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 
 	dec := xml.NewDecoder(rc)
 	dec.Strict = false
@@ -114,7 +116,7 @@ func parseEntry(f *zip.File, kind string, res *probeResult) (int, error) {
 	var count int
 	for {
 		tok, err := dec.Token()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {

@@ -335,7 +335,7 @@ func loadAreas(path string, log *slog.Logger) (*geo.Index, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var areas []geo.Area
 	if err := json.NewDecoder(f).Decode(&areas); err != nil {

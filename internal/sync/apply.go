@@ -312,7 +312,7 @@ func parseDeltaHouses(e gar.Entry, fn func(gar.House, bool), regions []string) e
 	if err != nil {
 		return err
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 
 	return gar.ParseAll(rc, func(a gar.Attrs) {
 		id := a.Int64("OBJECTID")
@@ -337,6 +337,6 @@ func streamDelta(e gar.Entry, fn func(io.Reader) error) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("открытие %s: %w", e.Kind, err)
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	return 0, fn(rc)
 }

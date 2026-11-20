@@ -505,6 +505,6 @@ func streamEntry(e gar.Entry, fn func(io.Reader) (gar.Stats, error)) (gar.Stats,
 	if err != nil {
 		return gar.Stats{}, fmt.Errorf("открытие %s: %w", e.Kind, err)
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	return fn(rc)
 }

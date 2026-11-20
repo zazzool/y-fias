@@ -80,7 +80,7 @@ func applyDeltas(
 
 		next, st, err := ysync.ApplyDelta(ctx, cur, a, int64(v.VersionID),
 			ingest.Options{Regions: regions, Log: log})
-		a.Close()
+		_ = a.Close()
 		if err != nil {
 			return fmt.Errorf("дельта %d: %w", v.VersionID, err)
 		}

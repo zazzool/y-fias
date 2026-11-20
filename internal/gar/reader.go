@@ -66,7 +66,7 @@ func getJSON(ctx context.Context, client *http.Client, url string, dst any) erro
 	if err != nil {
 		return fmt.Errorf("запрос %s: %w", url, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("%s: код %d", url, resp.StatusCode)
@@ -121,12 +121,12 @@ func OpenFile(path string) (*Archive, error) {
 	}
 	st, err := f.Stat()
 	if err != nil {
-		f.Close()
+		_ = f.Close()
 		return nil, err
 	}
 	zr, err := zip.NewReader(f, st.Size())
 	if err != nil {
-		f.Close()
+		_ = f.Close()
 		return nil, fmt.Errorf("разбор ZIP: %w", err)
 	}
 	return &Archive{

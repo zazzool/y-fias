@@ -70,11 +70,11 @@ func Write(path string, d Data, version int64) (Header, error) {
 	if err != nil {
 		return Header{}, err
 	}
-	defer os.Remove(tmp) // на случай ошибки; после Rename файла уже нет
+	defer func() { _ = os.Remove(tmp) }() // на случай ошибки; после Rename файла уже нет
 
 	h, err := writeTo(f, d, version)
 	if err != nil {
-		f.Close()
+		_ = f.Close()
 		return Header{}, err
 	}
 	if err := f.Close(); err != nil {

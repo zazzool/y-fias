@@ -45,6 +45,22 @@ linters:
         linters:
           - errcheck
           - prealloc
+      # Копирование в range и предвыделение важны на горячем пути (§9.3):
+      # разбор, индекс, нормализация. Ингест, синхронизация и отчёты
+      # работают раз в дни, и там ясность важнее экономии байтов.
+      - path-except: internal/(parse|index|normalize)/
+        linters:
+          - prealloc
+      - path-except: internal/(parse|index|normalize)/
+        linters:
+          - gocritic
+        text: rangeValCopy
+      # Утилиты командной строки: os.Exit после defer cancel() безвреден,
+      # контекст умирает вместе с процессом.
+      - path: cmd/
+        linters:
+          - gocritic
+        text: exitAfterDefer
 
 formatters:
   enable:

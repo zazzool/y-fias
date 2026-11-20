@@ -126,10 +126,10 @@ func SearchNorm(s string) string {
 	for _, r := range s {
 		r = unicode.ToLower(r)
 
-		switch {
-		case r == 'ё':
+		switch r {
+		case 'ё':
 			r = 'е'
-		case r == '-' || r == '–' || r == '—':
+		case '-', '–', '—':
 			r = ' '
 		}
 

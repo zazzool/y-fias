@@ -200,7 +200,7 @@ func readPoints(path string) ([]rawPoint, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	if strings.HasSuffix(path, ".jsonl") {
 		return readJSONL(f)
@@ -459,7 +459,7 @@ func loadAreas(path string) (*geo.Index, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var areas []geo.Area
 	if err := json.NewDecoder(f).Decode(&areas); err != nil {

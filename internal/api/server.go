@@ -129,7 +129,7 @@ func (s *Server) wrap(name string, fn func(http.ResponseWriter, *http.Request) e
 				s.metrics.Panics.Inc()
 				s.log.Error("паника в обработчике",
 					"метод", name, "причина", rec)
-				writeJSON(w, http.StatusInternalServerError,
+				_ = writeJSON(w, http.StatusInternalServerError,
 					ErrorResponse{Error: "внутренняя ошибка"})
 			}
 		}()
@@ -145,7 +145,7 @@ func (s *Server) wrap(name string, fn func(http.ResponseWriter, *http.Request) e
 				status = he.status
 			}
 			s.log.Warn("ошибка запроса", "метод", name, "ошибка", err)
-			writeJSON(w, status, ErrorResponse{Error: err.Error()})
+			_ = writeJSON(w, status, ErrorResponse{Error: err.Error()})
 		}
 	}
 }
@@ -386,7 +386,7 @@ func (s *Server) handleGeo(w http.ResponseWriter, r *http.Request) error {
 				Source:     parse.SourceNone.String(),
 			})
 		}
-		pt = geo.Point{Lon: c.Lon, Lat: c.Lat}
+		pt = geo.Point(c)
 		source = parse.SourceOSM
 	}
 
@@ -465,7 +465,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if s.areas != nil {
 		resp.Areas = s.areas.Len()
 	}
-	writeJSON(w, http.StatusOK, resp)
+	_ = writeJSON(w, http.StatusOK, resp)
 }
 
 // handleReady сообщает, готов ли сервис обслуживать запросы.
@@ -475,11 +475,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 	snap := s.snapshots.Load()
 	if snap == nil || snap.Len() == 0 {
-		writeJSON(w, http.StatusServiceUnavailable,
+		_ = writeJSON(w, http.StatusServiceUnavailable,
 			ErrorResponse{Error: "справочник не загружен"})
 		return
 	}
-	writeJSON(w, http.StatusOK, HealthResponse{Status: "ready", Streets: snap.Len()})
+	_ = writeJSON(w, http.StatusOK, HealthResponse{Status: "ready", Streets: snap.Len()})
 }
 
 /* ── вспомогательное ───────────────────────────────────────────── */

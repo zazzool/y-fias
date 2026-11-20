@@ -97,7 +97,7 @@ func (s *Store) EnqueueReview(ctx context.Context, items []ReviewItem) (int, err
 	if err != nil {
 		return 0, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	var n int
 	for _, it := range items {

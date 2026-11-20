@@ -231,7 +231,7 @@ func (s *Scheduler) applyDeltas(ctx context.Context, cur snapshot.Data, plan Pla
 
 		next, st, err := ApplyDelta(ctx, cur, a, int64(v.VersionID),
 			ingest.Options{Regions: s.regions, Log: s.log})
-		a.Close()
+		_ = a.Close()
 		if err != nil {
 			return fmt.Errorf("дельта %d: %w", v.VersionID, err)
 		}

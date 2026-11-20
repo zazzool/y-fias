@@ -1,6 +1,9 @@
 package parse
 
-import "strings"
+import (
+	"strings"
+	"unicode"
+)
 
 // Свёртка визуальных двойников.
 //
@@ -146,7 +149,7 @@ func LatinToCyrillicLayout(s string) string {
 			continue
 		}
 		if upper {
-			c = []rune(strings.ToUpper(string(c)))[0]
+			c = unicode.ToUpper(c)
 		}
 		b.WriteRune(c)
 	}

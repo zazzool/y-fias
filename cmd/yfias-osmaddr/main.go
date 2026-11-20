@@ -81,9 +81,9 @@ func run(ctx context.Context, log *slog.Logger, geoPath, out, region string, pau
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	bw := bufio.NewWriterSize(f, 1<<20)
-	defer bw.Flush()
+	defer func() { _ = bw.Flush() }()
 
 	client := &http.Client{Timeout: 15 * time.Minute}
 	var total, failed int
@@ -210,7 +210,7 @@ func readDone(path string) (map[int64]bool, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	done := map[int64]bool{}
 	sc := bufio.NewScanner(f)
@@ -238,7 +238,7 @@ func loadAreas(path string) ([]geo.Area, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var areas []geo.Area
 	if err := json.NewDecoder(f).Decode(&areas); err != nil {

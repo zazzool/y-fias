@@ -2,6 +2,7 @@ package gar
 
 import (
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 )
@@ -167,7 +168,7 @@ func parse(r io.Reader, take func(attrs) bool) (Stats, error) {
 	var root bool
 	for {
 		tok, err := dec.Token()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
@@ -216,7 +217,7 @@ func ParseAll(r io.Reader, fn func(Attrs)) error {
 	var root bool
 	for {
 		tok, err := dec.Token()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			return nil
 		}
 		if err != nil {

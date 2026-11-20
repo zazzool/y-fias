@@ -433,10 +433,6 @@ func (a *accumulator) bonus(st *Street) float64 {
 	return b
 }
 
-// enough — набрано ли достаточно результатов, чтобы не спускаться на
-// следующий слой.
-func (a *accumulator) enough() bool { return len(a.results) >= a.query.Limit }
-
 // top упорядочивает результаты: сначала по СЛОЮ, затем по баллу.
 //
 // Слой главнее намеренно. Если сортировать одним общим баллом, доменная

@@ -82,7 +82,7 @@ func run(ctx context.Context, log *slog.Logger, out, regions, archivePath string
 	if err != nil {
 		return err
 	}
-	defer a.Close()
+	defer func() { _ = a.Close() }()
 
 	res, err := ingest.Run(ctx, a, version, ingest.Options{
 		Regions:    splitRegions(regions),

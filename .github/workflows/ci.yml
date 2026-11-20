@@ -28,10 +28,13 @@ jobs:
             exit 1
           }
 
+      # Версия закреплена: «latest» у action@v6 ставил golangci-lint v1,
+      # который не читает конфиг v2 и не поддерживает Go 1.25, — линтер
+      # падал, не проверив ни строки.
       - name: Линтеры
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v8
         with:
-          version: latest
+          version: v2.5.0
 
       - name: go vet
         run: go vet ./...

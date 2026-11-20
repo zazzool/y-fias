@@ -118,7 +118,7 @@ func post(ctx context.Context, client *http.Client, query string) ([]byte, error
 		}
 
 		body, readErr := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 
 		switch resp.StatusCode {
 		case http.StatusOK:
@@ -128,13 +128,13 @@ func post(ctx context.Context, client *http.Client, query string) ([]byte, error
 			return body, nil
 		case http.StatusTooManyRequests, http.StatusGatewayTimeout,
 			http.StatusServiceUnavailable:
-			lastErr = fmt.Errorf("Overpass ответил %d (квота или перегрузка)", resp.StatusCode)
+			lastErr = fmt.Errorf("сервер Overpass ответил %d (квота или перегрузка)", resp.StatusCode)
 		default:
-			return nil, fmt.Errorf("Overpass ответил %d: %s",
+			return nil, fmt.Errorf("сервер Overpass ответил %d: %s",
 				resp.StatusCode, firstLine(body))
 		}
 	}
-	return nil, fmt.Errorf("Overpass недоступен после %d попыток: %w", attempts, lastErr)
+	return nil, fmt.Errorf("сервер Overpass недоступен после %d попыток: %w", attempts, lastErr)
 }
 
 func firstLine(b []byte) string {

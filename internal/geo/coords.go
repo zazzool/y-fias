@@ -168,7 +168,7 @@ func WriteCoords(path string, c *Coords) error {
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tmp)
+	defer func() { _ = os.Remove(tmp) }()
 
 	// Порядок записей фиксируется сортировкой: иначе файл меняется при
 	// каждой сборке из-за случайного обхода карты, и разницу не посмотреть.
@@ -205,21 +205,21 @@ func WriteCoords(path string, c *Coords) error {
 
 	bw := bufio.NewWriterSize(f, 1<<20)
 	if _, err := bw.Write(coordsMagic[:]); err != nil {
-		f.Close()
+		_ = f.Close()
 		return err
 	}
 	for _, v := range []any{int64(len(keys)), crc32.ChecksumIEEE(body)} {
 		if err := binary.Write(bw, binary.LittleEndian, v); err != nil {
-			f.Close()
+			_ = f.Close()
 			return err
 		}
 	}
 	if _, err := bw.Write(body); err != nil {
-		f.Close()
+		_ = f.Close()
 		return err
 	}
 	if err := bw.Flush(); err != nil {
-		f.Close()
+		_ = f.Close()
 		return err
 	}
 	if err := f.Close(); err != nil {
