@@ -11,12 +11,12 @@
 # в репозиторий идёт только манифест с контрольными суммами.
 #
 # Использование:
-#   scripts/dump-golden.sh
-#   YFIAS_PROD_HOST=root@1.2.3.4 scripts/dump-golden.sh
+#   YFIAS_PROD_HOST=root@<адрес прод-сервера> scripts/dump-golden.sh
 
 set -euo pipefail
 
-HOST="${YFIAS_PROD_HOST:-root@PROD_HOST}"
+# Адрес прода в репозитории не хранится: репозиторий публичный.
+HOST="${YFIAS_PROD_HOST:?задайте YFIAS_PROD_HOST=root@<адрес прод-сервера>}"
 CONTAINER="${YFIAS_PROD_CONTAINER:-ponp-postgres}"
 DB_USER="${YFIAS_PROD_USER:-ponp}"
 DB_NAME="${YFIAS_PROD_DB:-ponp}"
