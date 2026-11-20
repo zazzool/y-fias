@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/zazzool/y-fias/internal/auth"
 	"github.com/zazzool/y-fias/internal/geo"
 	"github.com/zazzool/y-fias/internal/index"
 	"github.com/zazzool/y-fias/internal/normalize"
@@ -30,6 +32,7 @@ type Server struct {
 	journal   *store.Journal
 	store     *store.Store
 	rollout   *rollout.Registry
+	auth      *auth.Keyring
 	started   time.Time
 }
 
@@ -54,6 +57,11 @@ type Options struct {
 	// Rollout — доли переключения чтения на Y-FIAS (этап 4). Если не задан,
 	// все методы выключены: трафик идёт в прежнюю систему.
 	Rollout *rollout.Registry
+
+	// Auth — допустимые API-ключи. nil означает открытый доступ: так
+	// работают тесты и явно разрешённый запуск -insecure-no-auth. Сервер в
+	// бою без ключей не стартует (cmd/yfias).
+	Auth *auth.Keyring
 }
 
 func New(opt Options) *Server {
@@ -81,6 +89,7 @@ func New(opt Options) *Server {
 		journal:   opt.Journal,
 		store:     opt.Store,
 		rollout:   ro,
+		auth:      opt.Auth,
 		started:   time.Now(),
 	}
 }
@@ -89,28 +98,38 @@ func New(opt Options) *Server {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("POST /v1/suggest", s.wrap("suggest", s.handleSuggest))
-	mux.HandleFunc("POST /v1/parse", s.wrap("parse", s.handleParse))
-	mux.HandleFunc("POST /v1/validate", s.wrap("validate", s.handleValidate))
-	mux.HandleFunc("POST /v1/geo", s.wrap("geo", s.handleGeo))
-	mux.HandleFunc("POST /v1/shadow", s.wrap("shadow", s.handleShadow))
+	// Роли (internal/auth): client — бэкенд МИС, admin — админка МИС
+	// (включает всё остальное), metrics — сборщик метрик.
+	mux.HandleFunc("POST /v1/suggest", s.wrap("suggest", auth.RoleClient, s.handleSuggest))
+	mux.HandleFunc("POST /v1/parse", s.wrap("parse", auth.RoleClient, s.handleParse))
+	mux.HandleFunc("POST /v1/validate", s.wrap("validate", auth.RoleClient, s.handleValidate))
+	mux.HandleFunc("POST /v1/geo", s.wrap("geo", auth.RoleClient, s.handleGeo))
+	mux.HandleFunc("POST /v1/shadow", s.wrap("shadow", auth.RoleClient, s.handleShadow))
 
-	// Чтение теневого журнала. Обслуживает админскую страницу МИС; проверку
-	// прав делает МИС, проксируя запрос своим авторизованным маршрутом.
-	mux.HandleFunc("GET /v1/shadow/report", s.wrap("shadow_report", s.handleShadowReport))
-	mux.HandleFunc("GET /v1/shadow/cases", s.wrap("shadow_cases", s.handleShadowCases))
-	mux.HandleFunc("POST /v1/shadow/review", s.wrap("shadow_review", s.handleShadowReview))
+	// Чтение теневого журнала и разбор — админская страница МИС.
+	mux.HandleFunc("GET /v1/shadow/report", s.wrap("shadow_report", auth.RoleAdmin, s.handleShadowReport))
+	mux.HandleFunc("GET /v1/shadow/cases", s.wrap("shadow_cases", auth.RoleAdmin, s.handleShadowCases))
+	mux.HandleFunc("POST /v1/shadow/review", s.wrap("shadow_review", auth.RoleAdmin, s.handleShadowReview))
 
-	// Флаги переключения чтения (этап 4). GET читает бэкенд МИС; PUT и
-	// история — только админская страница МИС через свой маршрут с проверкой
-	// прав, как и разбор теневых расхождений.
-	mux.HandleFunc("GET /v1/rollout", s.wrap("rollout", s.handleRollout))
-	mux.HandleFunc("PUT /v1/rollout", s.wrap("rollout_set", s.handleRolloutSet))
-	mux.HandleFunc("GET /v1/rollout/history", s.wrap("rollout_history", s.handleRolloutHistory))
+	// Флаги переключения чтения (этап 4): читает бэкенд МИС, меняет
+	// только админка.
+	mux.HandleFunc("GET /v1/rollout", s.wrap("rollout", auth.RoleClient, s.handleRollout))
+	mux.HandleFunc("PUT /v1/rollout", s.wrap("rollout_set", auth.RoleAdmin, s.handleRolloutSet))
+	mux.HandleFunc("GET /v1/rollout/history", s.wrap("rollout_history", auth.RoleAdmin, s.handleRolloutHistory))
 
+	// Проверки живости открыты: их вызывает healthcheck Docker, а отдают они
+	// только версию справочника и счётчики, без адресов.
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /readyz", s.handleReady)
-	mux.Handle("GET /metrics", s.metrics.Handler())
+
+	metrics := s.metrics.Handler()
+	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
+		if _, err := s.authorize(r, auth.RoleMetrics); err != nil {
+			s.writeError(w, "metrics", err)
+			return
+		}
+		metrics.ServeHTTP(w, r)
+	})
 
 	return mux
 }
@@ -120,9 +139,20 @@ func (s *Server) Handler() http.Handler {
 //
 // Паника в одном запросе не должна ронять сервис: диспетчерская работает
 // круглосуточно, и падение процесса из-за одного кривого ввода недопустимо.
-func (s *Server) wrap(name string, fn func(http.ResponseWriter, *http.Request) error) http.HandlerFunc {
+func (s *Server) wrap(name string, need auth.Role, fn func(http.ResponseWriter, *http.Request) error) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+
+		// Проверка ключа — до разбора тела: чужой запрос не должен стоить
+		// ни разбора JSON, ни строчки в журнале событий.
+		key, err := s.authorize(r, need)
+		if err != nil {
+			s.writeError(w, name, err)
+			return
+		}
+		if key != nil {
+			r = r.WithContext(context.WithValue(r.Context(), keyCtx{}, *key))
+		}
 
 		defer func() {
 			if rec := recover(); rec != nil {
@@ -134,20 +164,64 @@ func (s *Server) wrap(name string, fn func(http.ResponseWriter, *http.Request) e
 			}
 		}()
 
-		err := fn(w, r)
+		err = fn(w, r)
 		took := time.Since(start)
 		s.metrics.observe(name, took, err)
 
 		if err != nil {
-			status := http.StatusBadRequest
-			var he httpError
-			if errors.As(err, &he) {
-				status = he.status
-			}
-			s.log.Warn("ошибка запроса", "метод", name, "ошибка", err)
-			_ = writeJSON(w, status, ErrorResponse{Error: err.Error()})
+			s.writeError(w, name, err)
 		}
 	}
+}
+
+func (s *Server) writeError(w http.ResponseWriter, name string, err error) {
+	status := http.StatusBadRequest
+	var he httpError
+	if errors.As(err, &he) {
+		status = he.status
+	}
+	if status == http.StatusUnauthorized {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="yfias"`)
+	}
+	s.log.Warn("ошибка запроса", "метод", name, "ошибка", err)
+	_ = writeJSON(w, status, ErrorResponse{Error: err.Error()})
+}
+
+/* ── доступ ────────────────────────────────────────────────────── */
+
+type keyCtx struct{}
+
+// requestKey — ключ, с которым пришёл запрос, если доступ по ключам.
+func requestKey(r *http.Request) (auth.Key, bool) {
+	k, ok := r.Context().Value(keyCtx{}).(auth.Key)
+	return k, ok
+}
+
+// authorize проверяет ключ запроса.
+//
+// 401 — ключа нет или он неизвестен, 403 — ключ известен, но его роли мало.
+// Различие нужно эксплуатации: первое значит «не тот секрет в окружении»,
+// второе — «не тот ключ выдан».
+func (s *Server) authorize(r *http.Request, need auth.Role) (*auth.Key, error) {
+	if s.auth == nil {
+		return nil, nil
+	}
+	raw := auth.FromRequest(r)
+	if raw == "" {
+		s.metrics.AuthFailures.WithLabelValues("missing").Inc()
+		return nil, httpError{status: http.StatusUnauthorized, msg: "нужен API-ключ (X-API-Key)"}
+	}
+	key, ok := s.auth.Lookup(raw)
+	if !ok {
+		s.metrics.AuthFailures.WithLabelValues("invalid").Inc()
+		return nil, httpError{status: http.StatusUnauthorized, msg: "неизвестный API-ключ"}
+	}
+	if !key.Role.Allows(need) {
+		s.metrics.AuthFailures.WithLabelValues("forbidden").Inc()
+		return nil, httpError{status: http.StatusForbidden,
+			msg: fmt.Sprintf("ключу %q (роль %s) это недоступно, нужна роль %s", key.Name, key.Role, need)}
+	}
+	return &key, nil
 }
 
 type httpError struct {

@@ -17,10 +17,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/zazzool/y-fias/internal/api"
+	"github.com/zazzool/y-fias/internal/auth"
 	"github.com/zazzool/y-fias/internal/geo"
 	"github.com/zazzool/y-fias/internal/index"
 	"github.com/zazzool/y-fias/internal/rollout"
@@ -44,8 +46,18 @@ func main() {
 		rolloutSpec = flag.String("rollout", "",
 			"доли переключения чтения при первом запуске, например suggest=10,validate=100; "+
 				"сохранённые в базе значения важнее")
+		keysPath = flag.String("api-keys", "",
+			"файл API-ключей: строки «имя роль sha256:хеш»; иначе переменная YFIAS_API_KEYS")
+		noAuth = flag.Bool("insecure-no-auth", false,
+			"работать БЕЗ проверки ключей; только для локальной разработки")
+		genKey = flag.String("gen-key", "",
+			"создать ключ «имя:роль» (роли: client, admin, metrics), напечатать и выйти")
 	)
 	flag.Parse()
+
+	if *genKey != "" {
+		os.Exit(generateKey(*genKey))
+	}
 
 	rolloutDefaults, err := rollout.ParseSpec(*rolloutSpec)
 	if err != nil {
@@ -55,10 +67,16 @@ func main() {
 
 	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
+	keys, err := loadKeys(*keysPath, *noAuth, log)
+	if err != nil {
+		log.Error("доступ по ключам не настроен, сервис не запущен", "ошибка", err)
+		os.Exit(2)
+	}
+
 	if err := run(runConfig{
 		addr: *addr, snapPath: *snapPath, geoPath: *geoPath, coordPath: *coordPath,
 		dsn: *dsn, misDSN: *misDSN, syncEvery: *syncEvery, noHouses: *noHouses,
-		rollout: rolloutDefaults,
+		rollout: rolloutDefaults, keys: keys,
 	}, log); err != nil {
 		log.Error("сервис остановлен с ошибкой", "ошибка", err)
 		os.Exit(1)
@@ -81,6 +99,7 @@ type runConfig struct {
 	syncEvery time.Duration
 	noHouses  bool
 	rollout   map[string]int
+	keys      *auth.Keyring
 }
 
 func run(cfg runConfig, log *slog.Logger) error {
@@ -216,6 +235,7 @@ func run(cfg runConfig, log *slog.Logger) error {
 		Journal:   journal,
 		Store:     st,
 		Rollout:   ro,
+		Auth:      cfg.keys,
 	})
 
 	httpSrv := &http.Server{
@@ -271,6 +291,64 @@ func run(cfg runConfig, log *slog.Logger) error {
 	}
 	log.Info("сервис остановлен")
 	return nil
+}
+
+// loadKeys читает API-ключи из файла или из YFIAS_API_KEYS.
+//
+// Без ключей сервис НЕ стартует. Открытый доступ — только явным
+// -insecure-no-auth: через сервис идут адреса вызовов психиатрической
+// неотложки, и забытая настройка не должна молча означать «пускать всех».
+// Ключи вместе с флагом — тоже ошибка: непонятно, чего хотел запускающий.
+func loadKeys(path string, noAuth bool, log *slog.Logger) (*auth.Keyring, error) {
+	text, source := os.Getenv("YFIAS_API_KEYS"), "YFIAS_API_KEYS"
+	if path != "" {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("файл ключей: %w", err)
+		}
+		text, source = string(b), path
+	}
+
+	if noAuth {
+		if strings.TrimSpace(text) != "" {
+			return nil, fmt.Errorf("заданы и ключи (%s), и -insecure-no-auth; оставьте что-то одно", source)
+		}
+		log.Warn("ДОСТУП БЕЗ КЛЮЧЕЙ: любой, кто видит порт, читает и пишет журнал адресов. " +
+			"Только для локальной разработки")
+		return nil, nil
+	}
+	if strings.TrimSpace(text) == "" {
+		return nil, errors.New("ключи не заданы: укажите -api-keys или YFIAS_API_KEYS " +
+			"(создать ключ: yfias -gen-key mis-backend:client)")
+	}
+
+	kr, err := auth.Parse(text)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", source, err)
+	}
+	log.Info("доступ по API-ключам", "ключей", kr.Len(), "источник", source)
+	return kr, nil
+}
+
+// generateKey печатает новый ключ: сам ключ — клиенту, строку с хешем —
+// в файл ключей сервера. Сервер ключа не видит и не хранит.
+func generateKey(spec string) int {
+	name, role, ok := strings.Cut(spec, ":")
+	if !ok {
+		fmt.Fprintln(os.Stderr, "-gen-key: ожидается имя:роль, например mis-backend:client")
+		return 2
+	}
+	key, line, err := auth.Generate(name, auth.Role(role))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "-gen-key:", err)
+		return 2
+	}
+	fmt.Println("# Ключ — клиенту (например, YFIAS_API_KEY в окружении МИС). Показывается один раз.")
+	fmt.Println(key)
+	fmt.Println()
+	fmt.Println("# Строка — в файл ключей Y-FIAS (-api-keys или YFIAS_API_KEYS).")
+	fmt.Println(line)
+	return 0
 }
 
 // newRollout поднимает флаги переключения чтения.

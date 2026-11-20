@@ -78,8 +78,9 @@ Y-FIAS не стоит на пути запроса при доле 0%, а от�
 Новые первыми. По нему проверяется условие выхода этапа: «неделя на 100% без
 отката». Без подключённой базы отвечает 503.
 
-Как и разбор теневых расхождений, `PUT` и `history` вызываются **только**
-через авторизованный маршрут админки МИС: у самого сервиса аутентификации нет.
+`PUT` и `history` требуют ключа роли `admin`; `GET` — роли `client`. Ключ
+админа живёт только на стороне маршрутов админки МИС, которые сами
+проверяют права пользователя: в браузер он не попадает никогда.
 
 ### Метрики
 
@@ -102,6 +103,7 @@ yfias_rollout_rollbacks_total{endpoint="suggest"} откаты с момента
  * означает прежний путь. Диспетчер не должен заметить, что Y-FIAS лёг.
  */
 const YFIAS_URL = process.env.YFIAS_URL || ''
+const YFIAS_API_KEY = process.env.YFIAS_API_KEY || ''  // роль client
 const FLAGS_TIMEOUT_MS = 200
 const CALL_TIMEOUT_MS = 300
 const HASH = 'fnv1a32-mod100'
@@ -111,10 +113,11 @@ export type Endpoint = 'suggest' | 'parse' | 'validate' | 'geo'
 let cache: { flags: Record<string, number>; until: number } | null = null
 
 async function flags(): Promise<Record<string, number>> {
-  if (!YFIAS_URL) return {}
+  if (!YFIAS_URL || !YFIAS_API_KEY) return {}
   if (cache && cache.until > Date.now()) return cache.flags
   try {
     const res = await fetch(`${YFIAS_URL}/v1/rollout`, {
+      headers: { 'X-API-Key': YFIAS_API_KEY },
       signal: AbortSignal.timeout(FLAGS_TIMEOUT_MS),
     })
     const body = await res.json()
@@ -164,7 +167,7 @@ export async function withYfias<T>(
     try {
       const res = await fetch(`${YFIAS_URL}/v1/${endpoint}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': YFIAS_API_KEY },
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
       })

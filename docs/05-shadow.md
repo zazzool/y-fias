@@ -34,6 +34,7 @@
  * отвечает мусором, диспетчер этого не замечает.
  */
 const YFIAS_URL = process.env.YFIAS_URL || ''
+const YFIAS_API_KEY = process.env.YFIAS_API_KEY || ''  // роль client
 const TIMEOUT_MS = 50
 
 type ShadowPayload = {
@@ -48,7 +49,7 @@ type ShadowPayload = {
 }
 
 export function shadowCompare(payload: ShadowPayload): void {
-  if (!YFIAS_URL) return
+  if (!YFIAS_URL || !YFIAS_API_KEY) return
 
   // Никакого await: теневой вызов не должен добавлять ни миллисекунды
   // к ответу диспетчеру.
@@ -57,7 +58,7 @@ export function shadowCompare(payload: ShadowPayload): void {
 
   fetch(`${YFIAS_URL}/v1/shadow`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'X-API-Key': YFIAS_API_KEY },
     body: JSON.stringify(payload),
     signal: ctrl.signal,
   })

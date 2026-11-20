@@ -31,6 +31,10 @@ type Metrics struct {
 	RolloutPercent   *prometheus.GaugeVec
 	RolloutRollbacks *prometheus.CounterVec
 
+	// AuthFailures — отказы в доступе: missing, invalid, forbidden. Рост
+	// invalid после выкладки значит, что у МИС не тот ключ в окружении.
+	AuthFailures *prometheus.CounterVec
+
 	// JournalDropped — потерянные события журнала. Потери допустимы (журнал
 	// не должен тормозить подсказки), но обязаны быть видимы.
 	JournalDropped prometheus.GaugeFunc
@@ -85,10 +89,15 @@ func NewMetrics() *Metrics {
 			Name: "yfias_rollout_rollbacks_total",
 			Help: "Снижения доли переключения с момента запуска",
 		}, []string{"endpoint"}),
+
+		AuthFailures: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "yfias_auth_failures_total",
+			Help: "Отказы в доступе по API-ключу: missing, invalid, forbidden",
+		}, []string{"reason"}),
 	}
 
 	reg.MustRegister(m.Duration, m.Errors, m.LayerHits, m.Panics, m.ShadowVerdicts,
-		m.RolloutPercent, m.RolloutRollbacks)
+		m.RolloutPercent, m.RolloutRollbacks, m.AuthFailures)
 	return m
 }
 

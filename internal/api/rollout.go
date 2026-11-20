@@ -82,7 +82,18 @@ func (s *Server) handleRolloutSet(w http.ResponseWriter, r *http.Request) error 
 		return badRequest("не указана доля")
 	}
 
-	res, err := s.rollout.Set(r.Context(), req.Endpoint, *req.Percent, req.Reason, req.Actor)
+	// Без указанного человека в журнал идёт имя ключа: изменение без
+	// автора — это раскатка, которую потом некому объяснить.
+	actor := req.Actor
+	if k, ok := requestKey(r); ok {
+		if actor == "" {
+			actor = "key:" + k.Name
+		} else {
+			actor += " (key:" + k.Name + ")"
+		}
+	}
+
+	res, err := s.rollout.Set(r.Context(), req.Endpoint, *req.Percent, req.Reason, actor)
 	if err != nil {
 		if errors.Is(err, rollout.ErrUnknownEndpoint) ||
 			errors.Is(err, rollout.ErrPercentRange) ||
@@ -110,7 +121,7 @@ func (s *Server) handleRolloutSet(w http.ResponseWriter, r *http.Request) error 
 
 	s.log.Warn("изменена доля переключения",
 		"метод", req.Endpoint, "было", res.Change.From, "стало", res.Change.To,
-		"кто", req.Actor, "причина", req.Reason, "сохранено", res.Persisted)
+		"кто", actor, "причина", req.Reason, "сохранено", res.Persisted)
 
 	return writeJSON(w, http.StatusOK, resp)
 }
