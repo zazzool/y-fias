@@ -12,6 +12,7 @@ import (
 	"github.com/zazzool/y-fias/internal/index"
 	"github.com/zazzool/y-fias/internal/normalize"
 	"github.com/zazzool/y-fias/internal/parse"
+	"github.com/zazzool/y-fias/internal/rollout"
 	"github.com/zazzool/y-fias/internal/store"
 )
 
@@ -28,6 +29,7 @@ type Server struct {
 	metrics   *Metrics
 	journal   *store.Journal
 	store     *store.Store
+	rollout   *rollout.Registry
 	started   time.Time
 }
 
@@ -48,6 +50,10 @@ type Options struct {
 	// Store — чтение накопленного журнала (отчёт по теневому режиму).
 	// Тоже необязателен: без него отвечают все методы, кроме отчётных.
 	Store *store.Store
+
+	// Rollout — доли переключения чтения на Y-FIAS (этап 4). Если не задан,
+	// все методы выключены: трафик идёт в прежнюю систему.
+	Rollout *rollout.Registry
 }
 
 func New(opt Options) *Server {
@@ -59,6 +65,13 @@ func New(opt Options) *Server {
 	if m == nil {
 		m = NewMetrics()
 	}
+	ro := opt.Rollout
+	if ro == nil {
+		ro = rollout.New(nil, nil)
+	}
+	for e, p := range ro.State().Flags {
+		m.RolloutPercent.WithLabelValues(e).Set(float64(p))
+	}
 	return &Server{
 		snapshots: opt.Snapshots,
 		areas:     opt.Areas,
@@ -67,6 +80,7 @@ func New(opt Options) *Server {
 		metrics:   m,
 		journal:   opt.Journal,
 		store:     opt.Store,
+		rollout:   ro,
 		started:   time.Now(),
 	}
 }
@@ -86,6 +100,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/shadow/report", s.wrap("shadow_report", s.handleShadowReport))
 	mux.HandleFunc("GET /v1/shadow/cases", s.wrap("shadow_cases", s.handleShadowCases))
 	mux.HandleFunc("POST /v1/shadow/review", s.wrap("shadow_review", s.handleShadowReview))
+
+	// Флаги переключения чтения (этап 4). GET читает бэкенд МИС; PUT и
+	// история — только админская страница МИС через свой маршрут с проверкой
+	// прав, как и разбор теневых расхождений.
+	mux.HandleFunc("GET /v1/rollout", s.wrap("rollout", s.handleRollout))
+	mux.HandleFunc("PUT /v1/rollout", s.wrap("rollout_set", s.handleRolloutSet))
+	mux.HandleFunc("GET /v1/rollout/history", s.wrap("rollout_history", s.handleRolloutHistory))
 
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /readyz", s.handleReady)

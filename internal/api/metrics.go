@@ -25,6 +25,12 @@ type Metrics struct {
 	// этапа 3 читается прямо отсюда: verdict="worse" должен быть нулём.
 	ShadowVerdicts *prometheus.CounterVec
 
+	// RolloutPercent — текущая доля переключения по методам, RolloutRollbacks
+	// — откаты. Условие выхода этапа 4 «неделя на 100% без отката» читается
+	// отсюда.
+	RolloutPercent   *prometheus.GaugeVec
+	RolloutRollbacks *prometheus.CounterVec
+
 	// JournalDropped — потерянные события журнала. Потери допустимы (журнал
 	// не должен тормозить подсказки), но обязаны быть видимы.
 	JournalDropped prometheus.GaugeFunc
@@ -69,9 +75,20 @@ func NewMetrics() *Metrics {
 			Name: "yfias_shadow_verdicts_total",
 			Help: "Сравнение с прежней системой: same, better, worse, differ",
 		}, []string{"verdict"}),
+
+		RolloutPercent: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "yfias_rollout_percent",
+			Help: "Доля запросов МИС, обслуживаемых Y-FIAS, по методам",
+		}, []string{"endpoint"}),
+
+		RolloutRollbacks: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "yfias_rollout_rollbacks_total",
+			Help: "Снижения доли переключения с момента запуска",
+		}, []string{"endpoint"}),
 	}
 
-	reg.MustRegister(m.Duration, m.Errors, m.LayerHits, m.Panics, m.ShadowVerdicts)
+	reg.MustRegister(m.Duration, m.Errors, m.LayerHits, m.Panics, m.ShadowVerdicts,
+		m.RolloutPercent, m.RolloutRollbacks)
 	return m
 }
 

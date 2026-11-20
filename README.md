@@ -15,6 +15,7 @@
 | [`docs/04-stage0-findings.md`](docs/04-stage0-findings.md) | этап 0: результаты замеров |
 | [`docs/05-shadow.md`](docs/05-shadow.md) | теневой режим: что добавить в МИС |
 | [`docs/06-deploy.md`](docs/06-deploy.md) | выкладка для теневой работы |
+| [`docs/07-rollout.md`](docs/07-rollout.md) | этап 4: флаги переключения чтения и клиент МИС |
 | [`deploy/docker-compose.prod.yml`](deploy/docker-compose.prod.yml) | compose для прода (теневой режим) |
 
 ## Суть решения в трёх пунктах

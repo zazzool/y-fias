@@ -23,6 +23,7 @@ import (
 	"github.com/zazzool/y-fias/internal/api"
 	"github.com/zazzool/y-fias/internal/geo"
 	"github.com/zazzool/y-fias/internal/index"
+	"github.com/zazzool/y-fias/internal/rollout"
 	"github.com/zazzool/y-fias/internal/snapshot"
 	"github.com/zazzool/y-fias/internal/store"
 	ysync "github.com/zazzool/y-fias/internal/sync"
@@ -40,14 +41,24 @@ func main() {
 			"база МИС ТОЛЬКО НА ЧТЕНИЕ: адреса для сверки. Отдельно от -dsn намеренно")
 		syncEvery = flag.Duration("sync", 0,
 			"как часто догонять справочник дельтами; 0 — не синхронизировать")
+		rolloutSpec = flag.String("rollout", "",
+			"доли переключения чтения при первом запуске, например suggest=10,validate=100; "+
+				"сохранённые в базе значения важнее")
 	)
 	flag.Parse()
+
+	rolloutDefaults, err := rollout.ParseSpec(*rolloutSpec)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "-rollout:", err)
+		os.Exit(2)
+	}
 
 	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	if err := run(runConfig{
 		addr: *addr, snapPath: *snapPath, geoPath: *geoPath, coordPath: *coordPath,
 		dsn: *dsn, misDSN: *misDSN, syncEvery: *syncEvery, noHouses: *noHouses,
+		rollout: rolloutDefaults,
 	}, log); err != nil {
 		log.Error("сервис остановлен с ошибкой", "ошибка", err)
 		os.Exit(1)
@@ -69,6 +80,7 @@ type runConfig struct {
 	misDSN    string
 	syncEvery time.Duration
 	noHouses  bool
+	rollout   map[string]int
 }
 
 func run(cfg runConfig, log *slog.Logger) error {
@@ -193,6 +205,8 @@ func run(cfg runConfig, log *slog.Logger) error {
 		log.Info("синхронизация включена", "период", syncEvery.String())
 	}
 
+	ro := newRollout(cfg.rollout, st, log)
+
 	srv := api.New(api.Options{
 		Snapshots: holder,
 		Areas:     areas,
@@ -201,6 +215,7 @@ func run(cfg runConfig, log *slog.Logger) error {
 		Metrics:   metrics,
 		Journal:   journal,
 		Store:     st,
+		Rollout:   ro,
 	})
 
 	httpSrv := &http.Server{
@@ -256,6 +271,31 @@ func run(cfg runConfig, log *slog.Logger) error {
 	}
 	log.Info("сервис остановлен")
 	return nil
+}
+
+// newRollout поднимает флаги переключения чтения.
+//
+// Без базы доли берутся из командной строки и живут до перезапуска. С базой
+// сохранённые значения важнее: откат, сделанный руками, не должен отменяться
+// перезапуском контейнера с прежней конфигурацией. Если база есть, но
+// прочитать её не удалось, все методы выключаются — неизвестное состояние
+// раскатки безопаснее считать нулевым.
+func newRollout(defaults map[string]int, st *store.Store, log *slog.Logger) *rollout.Registry {
+	if st == nil {
+		ro := rollout.New(defaults, nil)
+		log.Info("флаги переключения без базы", "доли", ro.State().Flags)
+		return ro
+	}
+
+	ro := rollout.New(defaults, st)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := ro.Load(ctx); err != nil {
+		log.Warn("сохранённые флаги не прочитаны, переключение выключено", "причина", err)
+		return rollout.New(nil, st)
+	}
+	log.Info("флаги переключения загружены", "доли", ro.State().Flags)
+	return ro
 }
 
 func loadSnapshot(path string, noHouses bool, log *slog.Logger) (*index.Holder, error) {
