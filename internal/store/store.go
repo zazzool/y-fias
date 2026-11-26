@@ -9,6 +9,7 @@ package store
 import (
 	"context"
 	"embed"
+	"errors"
 	"fmt"
 	"time"
 
@@ -29,7 +30,8 @@ type Store struct {
 func Open(ctx context.Context, dsn string) (*Store, error) {
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
-		return nil, fmt.Errorf("разбор строки подключения: %w", err)
+		// Ошибка pgx может включать исходную строку вместе с паролем.
+		return nil, errors.New("некорректная строка подключения")
 	}
 
 	// Пул небольшой намеренно: на горячем пути базы нет, а фоновые задачи
