@@ -8,7 +8,7 @@
 # по своему расписанию и весят 52 МБ; монтировать их томом правильнее, чем
 # пересобирать образ ради обновления справочника.
 
-FROM golang:1.25-alpine AS build
+FROM mirror.gcr.io/library/golang:1.25-alpine@sha256:1ae0735f00daffa3aaf1363a5184c0d2dc55c78e3db4ec70241cdac97bf84b59 AS build
 
 WORKDIR /src
 
@@ -31,7 +31,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" \
     -o /out/ ./cmd/yfias-ingest ./cmd/yfias-sync ./cmd/yfias-geo ./cmd/yfias-geocode
 
-FROM alpine:3.20
+FROM public.ecr.aws/docker/library/alpine:3.23@sha256:469c9ea410b9215eaee7976ba6c0639039b444be8e5d638f7abbada189971eb2
 
 # ca-certificates — для обращения к ФНС и Overpass по HTTPS.
 # tzdata — чтобы время в журнале было московским, а не UTC.

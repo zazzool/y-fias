@@ -39,6 +39,7 @@ func main() {
 		coordPath = flag.String("coords", "data/coords.yfcoord", "файл координат адресов")
 		noHouses  = flag.Bool("no-houses", false, "не загружать дома (быстрее старт, меньше памяти)")
 		dsn       = flag.String("dsn", "", "своя база: журнал событий, версии, очередь ревью")
+		dsnPath   = flag.String("dsn-file", "", "файл со строкой подключения к своей базе")
 		misDSN    = flag.String("mis-dsn", "",
 			"база МИС ТОЛЬКО НА ЧТЕНИЕ: адреса для сверки. Отдельно от -dsn намеренно")
 		syncEvery = flag.Duration("sync", 0,
@@ -66,6 +67,23 @@ func main() {
 	}
 
 	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	if *dsnPath != "" {
+		if *dsn != "" {
+			log.Error("укажите один из параметров -dsn и -dsn-file")
+			os.Exit(2)
+		}
+		payload, err := os.ReadFile(*dsnPath)
+		if err != nil {
+			log.Error("не удалось прочитать файл подключения к базе", "причина", err)
+			os.Exit(2)
+		}
+		*dsn = strings.TrimSpace(string(payload))
+		if *dsn == "" {
+			log.Error("файл подключения к базе пуст")
+			os.Exit(2)
+		}
+	}
 
 	keys, err := loadKeys(*keysPath, *noAuth, log)
 	if err != nil {

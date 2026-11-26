@@ -1,0 +1,62 @@
+services:
+  db:
+    image: postgres@sha256:4e6e670bb069649261c9c18031f0aded7bb249a5b6664ddec29c013a89310d50
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: yfias
+      POSTGRES_USER: yfias
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres-password
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    secrets: [postgres-password]
+    healthcheck:
+      # Initdb сначала запускает сервер без TCP. Запуск приложения ждёт уже
+      # постоянный сервер, который доступен из соседнего контейнера.
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "yfias", "-d", "yfias"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    mem_limit: 256m
+  yfias:
+    image: ${YFIAS_IMAGE:?}
+    pull_policy: never
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    command:
+      - "-addr=:8080"
+      - "-snapshot=/data/gar.yfsnap"
+      - "-geo="
+      - "-coords="
+      - "-dsn-file=/run/secrets/yfias-dsn"
+      - "-api-keys=/run/secrets/yfias-keys"
+    volumes:
+      - type: bind
+        source: ${YFIAS_SNAPSHOT:?}
+        target: /data/gar.yfsnap
+        read_only: true
+        bind:
+          create_host_path: false
+    secrets: [yfias-dsn, yfias-keys]
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:8080/readyz"]
+      interval: 2s
+      timeout: 2s
+      retries: 8
+    mem_limit: 256m
+
+secrets:
+  postgres-password:
+    file: ${YFIAS_STAGE:?}/secrets/postgres-password
+  yfias-dsn:
+    file: ${YFIAS_STAGE:?}/secrets/yfias-dsn
+  yfias-keys:
+    file: ${YFIAS_STAGE:?}/secrets/yfias-keys
+
+volumes:
+  postgres:
+
+networks:
+  default:
+    internal: true
